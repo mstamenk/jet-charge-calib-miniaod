@@ -1,0 +1,16 @@
+universe = vanilla
+executable = {{wrapper}}
+arguments = {{arguments}}
+output = {{log_out}}
+error = {{log_err}}
+log = {{log_log}}
+getenv = True
+request_memory = {{request_memory}}
+request_cpus = {{request_cpus}}
+request_disk = {{request_disk}}
++JobFlavour = "{{job_flavour}}"
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+transfer_input_files = {{transfer_input_files}}
+transfer_output_files = {{transfer_output_files}}
+queue 1

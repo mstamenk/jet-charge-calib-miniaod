@@ -1,0 +1,301 @@
+# Jet-charge ntuple branch contract for MiniAOD processing.
+# Tree naming follows the framework convention.
+
+tree_name: "Events"
+
+max_cpf_candidates: 26
+max_npf_candidates: 25
+max_sv_candidates: 5
+max_pairwise_candidates: 30
+
+cand_sort: "DeepNTuples"
+cand_charged_only: false
+
+# Event-level metadata (analysis bookkeeping).
+event:
+  - run
+  - lumi
+  - event
+  - npv
+  - rho
+  - nMuonSel
+  - nElectronSel
+  - nTauSel
+  - met_pt
+  - met_phi
+  - met_sumEt
+  - top_mass_proxy
+  - lepton_pt
+  - lepton_eta
+  - lepton_phi
+  - lepton_mass
+  - lepton_charge
+  - lepton_pdgid
+  - muon_pt
+  - muon_eta
+  - muon_phi
+  - muon_mass
+  - muon_charge
+  - muon_relIso04
+  - muon_isLoose
+  - muon_isMedium
+  - muon_isTight
+  - electron_pt
+  - electron_eta
+  - electron_phi
+  - electron_mass
+  - electron_charge
+  - electron_relIso03
+  - electron_isEB
+  - electron_cutBased
+  - tau_pt
+  - tau_eta
+  - tau_phi
+  - tau_mass
+  - tau_charge
+  - tau_decayMode
+  - tau_idDecayModeNewDMs
+  - tau_idDeepTauVSjet
+  - tau_idDeepTauVSe
+  - tau_idDeepTauVSmu
+  - tau_rawDeepTauVSjet
+  - tau_rawDeepTauVSe
+  - tau_rawDeepTauVSmu
+  - genWeight
+  - puWeight
+  - puWeightUp
+  - puWeightDown
+  - pu_nTrueInt
+  - prefireWeight
+  - prefireWeightUp
+  - prefireWeightDown
+  - lheWeights
+  - lheWeightIds
+  - pdfWeights
+  - pdfWeightIds
+
+# Per-jet (global) features.
+jets:
+  - jet_pt
+  - jet_eta
+  - jet_phi
+  - jet_mass
+  - charged_fraction
+  - neutral_fraction
+  - jet_charge_k03
+  - jet_charge_k05
+  - jet_charge_k10
+  - jet_charge_k20
+  - n_Cpfcand
+  - n_Npfcand
+  - nsv
+  - jet_partonFlavour
+  - jet_btagDeepCSV_probb
+  - jet_btagDeepCSV_probbb
+  - jet_btagDeepCSV_probc
+  - jet_btagDeepCSV_probudsg
+  - jet_btagDeepB
+  - jet_btagDeepC
+  - jet_btagPNetB
+  - jet_btagPNetCvB
+  - jet_btagPNetCvL
+  - jet_btagPNetQvG
+  - jet_pnet_BvsAll
+  - jet_pnet_CvsB
+  - jet_pnet_CvsL
+  - jet_pnet_QvsG
+  - jet_pnet_TauVsEle
+  - jet_pnet_TauVsJet
+  - jet_pnet_TauVsMu
+  - jet_pnet_probb
+  - jet_pnet_probc
+  - jet_pnet_probele
+  - jet_pnet_probg
+  - jet_pnet_probmu
+  - jet_pnet_probtaum1h0p
+  - jet_pnet_probtaum1h1p
+  - jet_pnet_probtaum1h2p
+  - jet_pnet_probtaum3h0p
+  - jet_pnet_probtaum3h1p
+  - jet_pnet_probtaup1h0p
+  - jet_pnet_probtaup1h1p
+  - jet_pnet_probtaup1h2p
+  - jet_pnet_probtaup3h0p
+  - jet_pnet_probtaup3h1p
+  - jet_pnet_probuds
+  - jet_pnet_ptcorr
+  - jet_pnet_ptnu
+  - jet_pnet_ptreshigh
+  - jet_pnet_ptreslow
+  - jet_btagRobustParTAK4B
+  - jet_btagRobustParTAK4CvB
+  - jet_btagRobustParTAK4CvL
+  - jet_btagRobustParTAK4QG
+  - jet_ParTPosvsAll
+  - jet_ParTNegvsAll
+  - jet_ParTZerovsAll
+  - jet_ParTPosvsNeg
+  - jet_charge_score
+  - TagVarCSV_trackSumJetEtRatio
+  - TagVarCSV_trackSumJetDeltaR
+  - TagVarCSV_vertexCategory
+  - TagVarCSV_trackSip2dValAboveCharm
+  - TagVarCSV_trackSip2dSigAboveCharm
+  - TagVarCSV_trackSip3dValAboveCharm
+  - TagVarCSV_trackSip3dSigAboveCharm
+  - TagVarCSV_jetNSelectedTracks
+  - TagVarCSV_jetNTracksEtaRel
+  - has_soft_mu
+  - soft_mu_charge
+  - soft_mu_ptrel
+  - soft_mu_ip_sig
+  - soft_mu_dR_jet
+  - n_Cpfpairs
+  - nCpfpairs
+  - hadron_species
+  - hadron_species_pdgid
+  - hadron_species_fallback_pdgid
+  - hadron_charge
+  - jet_pflavCharge
+  - jet_hflav
+  - mass_2trk_pi
+  - mass_2trk_kpi
+  - mass_3trk_pi
+  - mass_3trk_kpipi
+  - mass_2trk_pi_pi0
+  - mass_2trk_kpi_pi0
+  - mass_3trk_pi_pi0
+  - mass_3trk_kpipi_pi0
+  - pi0_mass
+  - pi0_pt
+  - pi0_found
+  - hadPi0
+  - nPi0
+  - hadron_mixing
+
+cpf_candidates:
+  - Cpfcan_eta
+  - Cpfcan_phi
+  - Cpfcan_BtagPf_trackEtaRel
+  - Cpfcan_BtagPf_trackPtRel
+  - Cpfcan_BtagPf_trackPPar
+  - Cpfcan_BtagPf_trackDeltaR
+  - Cpfcan_BtagPf_trackPParRatio
+  - Cpfcan_BtagPf_trackSip2dVal
+  - Cpfcan_BtagPf_trackSip2dSig
+  - Cpfcan_BtagPf_trackSip3dVal
+  - Cpfcan_BtagPf_trackSip3dSig
+  - Cpfcan_BtagPf_trackJetDistVal
+  - Cpfcan_ptrel
+  - Cpfcan_drminsv
+  - Cpfcan_VTX_ass
+  - Cpfcan_fromPV
+  - Cpfcan_puppiw
+  - Cpfcan_chi2
+  - Cpfcan_quality
+  - Cpfcan_pt
+  - Cpfcan_charge
+  - Cpfcan_dz
+  - Cpfcan_dxy
+  - Cpfcan_dxysig
+  - Cpfcan_BtagPf_trackDecayLen
+  - Cpfcan_HadFrac
+  - Cpfcan_CaloFrac
+  - Cpfcan_pdgID
+  - Cpfcan_lostInnerHits
+  - Cpfcan_numberOfPixelHits
+  - Cpfcan_numberOfStripHits
+  - Cpfcan_tau_signal
+  - Cpfcan_px
+  - Cpfcan_py
+  - Cpfcan_pz
+  - Cpfcan_e
+  - Cpfcan_isKaon
+  - Cpfcan_kaon_genCharge
+  - Cpfcan_kaon_motherPdgId
+  - Cpfcan_kaon_motherCharge
+
+npf_candidates:
+  - Npfcan_pt
+  - Npfcan_ptrel
+  - Npfcan_etarel
+  - Npfcan_phirel
+  - Npfcan_deltaR
+  - Npfcan_isGamma
+  - Npfcan_HadFrac
+  - Npfcan_drminsv
+  - Npfcan_puppiw
+  - Npfcan_tau_signal
+  - Npfcan_px
+  - Npfcan_py
+  - Npfcan_pz
+  - Npfcan_e
+
+vtx_features:
+  - sv_pt
+  - sv_deltaR
+  - sv_mass
+  - sv_ntracks
+  - sv_etarel
+  - sv_phirel
+  - sv_chi2
+  - sv_normchi2
+  - sv_dxy
+  - sv_dxysig
+  - sv_d3d
+  - sv_d3dsig
+  - sv_costhetasvpv
+  - sv_enratio
+  - sv_charge_sum
+  - sv_px
+  - sv_py
+  - sv_pz
+  - sv_e
+
+pairwise_features:
+  - pair_pca_distance
+  - pair_pca_significance
+  - pair_pcaSeed_x1
+  - pair_pcaSeed_y1
+  - pair_pcaSeed_z1
+  - pair_pcaSeed_x2
+  - pair_pcaSeed_y2
+  - pair_pcaSeed_z2
+  - pair_pcaSeed_xerr1
+  - pair_pcaSeed_yerr1
+  - pair_pcaSeed_zerr1
+  - pair_pcaSeed_xerr2
+  - pair_pcaSeed_yerr2
+  - pair_pcaSeed_zerr2
+  - pair_dotprod1
+  - pair_dotprod2
+  - pair_pca_dist1
+  - pair_pca_dist2
+  - pair_dotprod12_2D
+  - pair_dotprod12_2DV
+  - pair_dotprod12_3D
+  - pair_dotprod12_3DV
+  - pair_pca_jetAxis_dist
+  - pair_pca_jetAxis_dotprod
+  - pair_pca_jetAxis_dEta
+  - pair_pca_jetAxis_dPhi
+  - pfcand_dist_vtx_12
+
+truths:
+  - isB
+  - isBB
+  - isGBB
+  - isLeptonicB
+  - isLeptonicB_C
+  - isC
+  - isCC
+  - isGCC
+  - isU
+  - isD
+  - isS
+  - isG
+
+labels:
+  charge_label_feature: jet_pflavCharge
+  charge_label_values: [-1, 0, 1]
+  hadron_species_feature: hadron_species

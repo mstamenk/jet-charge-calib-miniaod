@@ -1,0 +1,67 @@
+mode: at_least_one_lepton  # hadronic | single_muon | single_electron | single_lepton | dilepton | at_least_one_lepton
+
+hlt_by_era:
+  UL16:
+    apply: true
+    process: "HLT"
+    paths:
+      - "HLT_IsoMu24_v*"
+      - "HLT_IsoTkMu24_v*"
+      - "HLT_Ele27_WPTight_Gsf_v*"
+  UL17:
+    apply: true
+    process: "HLT"
+    paths:
+      - "HLT_IsoMu27_v*"
+      - "HLT_Ele32_WPTight_Gsf_L1DoubleEG_v*"
+      - "HLT_Ele35_WPTight_Gsf_v*"
+  UL18:
+    apply: true
+    process: "HLT"
+    paths:
+      - "HLT_IsoMu24_v*"
+      - "HLT_Ele32_WPTight_Gsf_v*"
+  Run3_22:
+    apply: true
+    process: "HLT"
+    paths:
+      - "HLT_IsoMu24_v*"
+      - "HLT_Mu50_v*"
+      - "HLT_Ele32_WPTight_Gsf_v*"
+  Run3_22EE:
+    apply: true
+    process: "HLT"
+    paths:
+      - "HLT_IsoMu24_v*"
+      - "HLT_Mu50_v*"
+      - "HLT_Ele32_WPTight_Gsf_v*"
+  Run3_23:
+    apply: true
+    process: "HLT"
+    paths:
+      - "HLT_IsoMu24_v*"
+      - "HLT_Ele32_WPTight_Gsf_v*"
+  Run3_23BPix:
+    apply: true
+    process: "HLT"
+    paths:
+      - "HLT_IsoMu24_v*"
+      - "HLT_Ele32_WPTight_Gsf_v*"
+  Run3_24:
+    apply: true
+    process: "HLT"
+    paths:
+      - "HLT_IsoMu24_v*"
+      - "HLT_Ele32_WPTight_Gsf_v*"
+
+jets:
+  min_njets: 4
+  min_pt: 25.0
+  max_eta: 2.5
+  jet_id: "tight"  # "loose" | "tight" | "tightLepVeto" | "" (disable)
+
+leptons:
+  muon_min_pt: 20.0
+  muon_max_eta: 2.4
+  electron_min_pt: 25.0
+  electron_max_eta: 2.5

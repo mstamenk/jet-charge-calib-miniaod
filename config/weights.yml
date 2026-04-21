@@ -1,0 +1,20 @@
+apply_pu: false
+apply_lhe: false
+
+# Placeholder for future sources
+sources:
+  genWeight: true
+  pileup: null
+  lhe: null
+
+# Optional pileup weight configuration.
+# Use run_cfg.py with --era or --data-era to select the entry below.
+# pileup:
+#   Run3_24:
+#     file: "/path/to/pu_weights.root"
+#     hist: "puweight"
+#     hist_up: "puweight_up"
+#     hist_down: "puweight_down"
+#   default:
+#     file: "/path/to/pu_weights.root"
+#     hist: "puweight"

@@ -1,0 +1,8 @@
+enabled: []
+
+systematics:
+  pu:
+    type: weight
+    branches:
+      up: weight_pu_up
+      down: weight_pu_down
