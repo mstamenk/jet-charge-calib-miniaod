@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import argparse
+import fnmatch
+import json
 import os
 import re
 import subprocess
@@ -12,7 +14,7 @@ except ImportError:
     print("Missing PyYAML. Install with pip or use a CMSSW environment that includes it.", file=sys.stderr)
     sys.exit(1)
 
-AAA_PREFIX = "root://cmsxrootd.fnal.gov/"
+AAA_PREFIX = "root://xrootd-cms.infn.it/"
 
 DEFAULT_ERAS = [
     "UL16",
@@ -365,6 +367,76 @@ def _sanitize_dataset_tag(dataset):
     return tag
 
 
+def _extract_group_from_path(path):
+    if path and path[0] in ("mc", "data"):
+        return path[0]
+    return ""
+
+
+def _xsec_entry_to_meta(entry):
+    if entry is None:
+        return {}
+    if isinstance(entry, (int, float)):
+        return {"xsec_pb": float(entry)}
+    if isinstance(entry, dict):
+        meta = {}
+        if "xsec_pb" in entry:
+            meta["xsec_pb"] = float(entry["xsec_pb"])
+        elif "xsec" in entry:
+            meta["xsec_pb"] = float(entry["xsec"])
+        if "sum_weights" in entry:
+            meta["sum_weights"] = float(entry["sum_weights"])
+        elif "sumw" in entry:
+            meta["sum_weights"] = float(entry["sumw"])
+        if "target_lumi_pb" in entry:
+            meta["target_lumi_pb"] = float(entry["target_lumi_pb"])
+        return meta
+    return {}
+
+
+def _lookup_xsec_meta(xsec_cfg, group, era, sample, dataset):
+    if not xsec_cfg or group != "mc":
+        return {}
+
+    out = {}
+    primary_dataset = _dataset_primary(dataset)
+
+    dataset_overrides = xsec_cfg.get("dataset_overrides", {})
+    if isinstance(dataset_overrides, dict):
+        out.update(_xsec_entry_to_meta(dataset_overrides.get(dataset)))
+
+    primary_overrides = xsec_cfg.get("primary_dataset_overrides", {})
+    if isinstance(primary_overrides, dict):
+        out.update(_xsec_entry_to_meta(primary_overrides.get(primary_dataset)))
+
+    primary_globs = xsec_cfg.get("primary_dataset_globs", {})
+    if isinstance(primary_globs, dict):
+        for pattern, entry in primary_globs.items():
+            if fnmatch.fnmatch(primary_dataset, pattern):
+                out.update(_xsec_entry_to_meta(entry))
+                break
+
+    mc_cfg = xsec_cfg.get("mc", {})
+    if isinstance(mc_cfg, dict):
+        default_cfg = mc_cfg.get("default", {})
+        if isinstance(default_cfg, dict):
+            out.update(_xsec_entry_to_meta(default_cfg.get(sample)))
+        era_cfg = mc_cfg.get(era, {})
+        if isinstance(era_cfg, dict):
+            out.update(_xsec_entry_to_meta(era_cfg.get(sample)))
+
+    target_lumi = xsec_cfg.get("target_lumi_pb", {})
+    if isinstance(target_lumi, dict):
+        if era in target_lumi:
+            out["target_lumi_pb"] = float(target_lumi[era])
+        elif "default" in target_lumi:
+            out["target_lumi_pb"] = float(target_lumi["default"])
+    elif isinstance(target_lumi, (int, float)):
+        out["target_lumi_pb"] = float(target_lumi)
+
+    return out
+
+
 def _iter_dataset_entries(cfg, prefix=None):
     if prefix is None:
         prefix = []
@@ -500,6 +572,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("config", help="Path to datasets.yml (input or output with --discover)")
     parser.add_argument("--tag", help="Output tag (used for filelists/<tag>)")
+    parser.add_argument(
+        "--xsections",
+        default="",
+        help="Optional xsections YAML used to annotate filelist manifest with xsec/sumw/lumi metadata",
+    )
     parser.add_argument("--max-files", type=int, default=0, help="Limit number of files per sample")
     parser.add_argument("--query-filter", default="", help="Optional dasgoclient file query filter")
     parser.add_argument("--dataset-query-filter", default="", help="Optional dasgoclient dataset query filter")
@@ -530,8 +607,14 @@ def main():
         default=_default_workers(),
         help="Number of parallel DAS queries (default: %(default)s)",
     )
+    parser.add_argument(
+        "--aaa-prefix",
+        default="root://xrootd-cms.infn.it/",
+        help="Prefix prepended to DAS file paths (default: %(default)s)",
+    )
     args = parser.parse_args()
     args.workers = max(1, args.workers)
+    globals()["AAA_PREFIX"] = args.aaa_prefix
 
     if args.discover:
         eras = [era.strip() for era in args.eras.split(",") if era.strip()]
@@ -547,6 +630,10 @@ def main():
 
     with open(args.config, "r", encoding="utf-8") as handle:
         cfg = yaml.safe_load(handle)
+    xsec_cfg = {}
+    if args.xsections:
+        with open(args.xsections, "r", encoding="utf-8") as handle:
+            xsec_cfg = yaml.safe_load(handle) or {}
 
     out_base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "filelists", args.tag)
     os.makedirs(out_base, exist_ok=True)
@@ -557,6 +644,7 @@ def main():
     for path, sample_cfg in _iter_dataset_entries(cfg):
         if not _should_keep_path(path, filter_eras):
             continue
+        group = _extract_group_from_path(path)
         era = _extract_era_from_path(path)
         sample = path[-1] if path else ""
         datasets = _resolve_datasets(sample_cfg, args.dataset_query_filter, prefer_latest, era=era, sample=sample)
@@ -565,19 +653,29 @@ def main():
         for dataset in datasets:
             sample_tag = "__".join(path + [_sanitize_dataset_tag(dataset)])
             out_path = os.path.join(out_base, f"{sample_tag}.txt")
-            filelist_tasks.append((dataset, out_path, sample_tag))
+            xsec_meta = _lookup_xsec_meta(xsec_cfg, group, era, sample, dataset)
+            filelist_tasks.append((dataset, out_path, sample_tag, group, era, sample, xsec_meta))
 
     if not filelist_tasks:
         print("No datasets selected to query.")
         return
 
+    manifest = {}
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         future_to_task = {
-            executor.submit(_run_das_query, dataset, query_filter=args.query_filter): (dataset, out_path, sample_tag)
-            for dataset, out_path, sample_tag in filelist_tasks
+            executor.submit(_run_das_query, dataset, query_filter=args.query_filter): (
+                dataset,
+                out_path,
+                sample_tag,
+                group,
+                era,
+                sample,
+                xsec_meta,
+            )
+            for dataset, out_path, sample_tag, group, era, sample, xsec_meta in filelist_tasks
         }
         for future in as_completed(future_to_task):
-            dataset, out_path, sample_tag = future_to_task[future]
+            dataset, out_path, sample_tag, group, era, sample, xsec_meta = future_to_task[future]
             try:
                 files = future.result()
             except subprocess.CalledProcessError as exc:
@@ -588,6 +686,25 @@ def main():
             with open(out_path, "w", encoding="utf-8") as out:
                 out.write("\n".join(files) + "\n")
             print(f"Wrote {len(files)} files -> {out_path}")
+
+            manifest[sample_tag] = {
+                "group": group,
+                "sample_type": group if group in ("mc", "data") else "auto",
+                "era": era,
+                "sample_name": sample,
+                "dataset": dataset,
+                "primary_dataset": _dataset_primary(dataset),
+                "filelist": out_path,
+                "n_files": len(files),
+                "xsec_pb": xsec_meta.get("xsec_pb", -1.0),
+                "sum_weights": xsec_meta.get("sum_weights", 0.0),
+                "target_lumi_pb": xsec_meta.get("target_lumi_pb", 0.0),
+            }
+
+    manifest_path = os.path.join(out_base, "manifest.json")
+    with open(manifest_path, "w", encoding="utf-8") as handle:
+        json.dump({"tag": args.tag, "samples": manifest}, handle, sort_keys=True, indent=2)
+    print(f"Wrote fileset manifest -> {manifest_path}")
 
 
 if __name__ == "__main__":

@@ -26,3 +26,25 @@
   <use name="FWCore/Common"/>
   <flags EDM_PLUGIN="1"/>
 </library>
+
+<library file="EventPreselectionFilter.cc" name="EventPreselectionFilter">
+  <use name="FWCore/Framework"/>
+  <use name="FWCore/ParameterSet"/>
+  <use name="FWCore/Common"/>
+  <use name="FWCore/MessageLogger"/>
+  <use name="DataFormats/Common"/>
+  <use name="DataFormats/PatCandidates"/>
+  <use name="DataFormats/Math"/>
+  <use name="DataFormats/VertexReco"/>
+  <flags EDM_PLUGIN="1"/>
+</library>
+
+<library file="InputEventWeightCounter.cc" name="InputEventWeightCounter">
+  <use name="FWCore/Framework"/>
+  <use name="FWCore/ParameterSet"/>
+  <use name="FWCore/ServiceRegistry"/>
+  <use name="FWCore/MessageLogger"/>
+  <use name="CommonTools/UtilAlgos"/>
+  <use name="SimDataFormats/GeneratorProducts"/>
+  <flags EDM_PLUGIN="1"/>
+</library>

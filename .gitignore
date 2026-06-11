@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+
+# Local CMSSW and analysis outputs
+*.root
+*.parquet
+*.png
+*.pdf
+
+# Generated production inputs/outputs
+filelists/
+filelists_split/
+condor/logs/
+run/
+analysis/plots*/
+analysis/hists_by_process*/
+studies/*/plots/
+studies/*/output/
+
+# Local scratch logs and monitors
+*.log
+condor_mon.txt
+merge_out.txt
+
+# Local Codex session state
+.codex

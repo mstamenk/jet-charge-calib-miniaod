@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cctype>
+#include <functional>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -12,8 +14,10 @@
 #include "FWCore/Framework/interface/EventSetup.h"
 #include "FWCore/Framework/interface/one/EDAnalyzer.h"
 #include "FWCore/Framework/interface/MakerMacros.h"
+#include "FWCore/MessageLogger/interface/MessageLogger.h"
 #include "FWCore/ParameterSet/interface/ParameterSet.h"
 #include "FWCore/ServiceRegistry/interface/Service.h"
+#include "FWCore/Utilities/interface/Exception.h"
 #include "FWCore/Utilities/interface/ESInputTag.h"
 #include "CommonTools/UtilAlgos/interface/TFileService.h"
 
@@ -57,6 +61,7 @@
 #include "TLorentzVector.h"
 #include "TVector3.h"
 #include "TTree.h"
+#include "TH1D.h"
 #include "TH1I.h"
 #include "TFile.h"
 
@@ -338,8 +343,336 @@ inline float getJetDiscriminator(const pat::Jet &jet, const std::string &label) 
   return -1.0f;
 }
 
+inline bool isUsableTagScore(float val) {
+  return std::isfinite(val) && val >= 0.0f;
+}
+
+inline std::string summarizeJetDiscriminators(const pat::Jet &jet,
+                                              const std::vector<std::string> &keepTokens,
+                                              size_t maxEntries = 60) {
+  std::ostringstream out;
+  size_t nKept = 0;
+  for (const auto &entry : jet.getPairDiscri()) {
+    bool keep = keepTokens.empty();
+    for (const auto &token : keepTokens) {
+      if (entry.first.find(token) != std::string::npos) {
+        keep = true;
+        break;
+      }
+    }
+    if (!keep) {
+      continue;
+    }
+    if (nKept > 0) {
+      out << ", ";
+    }
+    out << entry.first << "=" << entry.second;
+    ++nKept;
+    if (nKept >= maxEntries) {
+      out << ", ...";
+      break;
+    }
+  }
+  if (nKept == 0) {
+    return "<none>";
+  }
+  return out.str();
+}
+
+inline std::pair<float, std::string> getJetDiscriminatorNonNegativeWithLabel(const pat::Jet &jet,
+                                                                              std::initializer_list<const char *> labels) {
+  for (const auto *label : labels) {
+    float val = jet.bDiscriminator(label);
+    if (isUsableTagScore(val)) {
+      return {val, label};
+    }
+  }
+  return {-1.0f, ""};
+}
+
 inline bool isValidBranchChar(const char c) {
   return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+
+inline std::string toLowerCopy(std::string s) {
+  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
+  return s;
+}
+
+inline std::string joinStrings(const std::vector<std::string> &values, const size_t maxEntries = 32) {
+  std::ostringstream out;
+  size_t n = 0;
+  for (const auto &value : values) {
+    if (n > 0) {
+      out << ", ";
+    }
+    out << value;
+    ++n;
+    if (n >= maxEntries) {
+      out << ", ...";
+      break;
+    }
+  }
+  if (n == 0) {
+    return "<none>";
+  }
+  return out.str();
+}
+
+inline bool isSupportedMuonIdWp(const std::string &wp) {
+  return (wp == "none" || wp == "loose" || wp == "medium" || wp == "tight");
+}
+
+inline bool isSupportedElectronIdWp(const std::string &wp) {
+  return (wp == "none" || wp == "veto" || wp == "loose" || wp == "medium" || wp == "tight");
+}
+
+inline int minElectronCutBasedForWp(const std::string &wp) {
+  if (wp == "none") {
+    return -1;
+  }
+  if (wp == "veto") {
+    return 1;
+  }
+  if (wp == "loose") {
+    return 2;
+  }
+  if (wp == "medium") {
+    return 3;
+  }
+  if (wp == "tight") {
+    return 4;
+  }
+  return 999;
+}
+
+inline void updateElectronCutBasedFlags(const std::string &name,
+                                        const float value,
+                                        bool &sawCutBased,
+                                        bool &passVeto,
+                                        bool &passLoose,
+                                        bool &passMedium,
+                                        bool &passTight) {
+  const std::string low = toLowerCopy(name);
+  const bool looksLikeCutBased = (low.find("cutbasedelectronid") != std::string::npos) ||
+                                 (low.find("cutbasedid") != std::string::npos) || (low == "cutbased");
+  if (!looksLikeCutBased) {
+    return;
+  }
+  sawCutBased = true;
+  const bool pass = (value > 0.5f);
+  if (low.find("tight") != std::string::npos) {
+    passTight = passTight || pass;
+    return;
+  }
+  if (low.find("medium") != std::string::npos) {
+    passMedium = passMedium || pass;
+    return;
+  }
+  if (low.find("loose") != std::string::npos) {
+    passLoose = passLoose || pass;
+    return;
+  }
+  if (low.find("veto") != std::string::npos) {
+    passVeto = passVeto || pass;
+  }
+}
+
+inline int cutBasedFromFlags(const bool sawCutBased,
+                             const bool passVeto,
+                             const bool passLoose,
+                             const bool passMedium,
+                             const bool passTight) {
+  if (passTight) {
+    return 4;
+  }
+  if (passMedium) {
+    return 3;
+  }
+  if (passLoose) {
+    return 2;
+  }
+  if (passVeto) {
+    return 1;
+  }
+  return sawCutBased ? 0 : -1;
+}
+
+inline bool getElectronIdValueByName(const pat::Electron &electron, const std::string &name, float &value) {
+  if (electron.hasUserInt(name)) {
+    value = static_cast<float>(electron.userInt(name));
+    return true;
+  }
+  if (electron.hasUserFloat(name)) {
+    value = electron.userFloat(name);
+    return true;
+  }
+  try {
+    for (const auto &pair : electron.electronIDs()) {
+      if (pair.first == name) {
+        value = pair.second;
+        return true;
+      }
+    }
+  } catch (...) {
+  }
+  return false;
+}
+
+inline int electronCutBasedValueFromNamedKeys(const pat::Electron &electron,
+                                              const std::string &veto_key,
+                                              const std::string &loose_key,
+                                              const std::string &medium_key,
+                                              const std::string &tight_key) {
+  float value = -1.0f;
+  const bool hasVeto = getElectronIdValueByName(electron, veto_key, value);
+  const bool passVeto = hasVeto && (value > 0.5f);
+  const bool hasLoose = getElectronIdValueByName(electron, loose_key, value);
+  const bool passLoose = hasLoose && (value > 0.5f);
+  const bool hasMedium = getElectronIdValueByName(electron, medium_key, value);
+  const bool passMedium = hasMedium && (value > 0.5f);
+  const bool hasTight = getElectronIdValueByName(electron, tight_key, value);
+  const bool passTight = hasTight && (value > 0.5f);
+  const bool saw = hasVeto || hasLoose || hasMedium || hasTight;
+  return cutBasedFromFlags(saw, passVeto, passLoose, passMedium, passTight);
+}
+
+inline int electronCutBasedValueFromFamily(const pat::Electron &electron, const std::string &family_prefix) {
+  return electronCutBasedValueFromNamedKeys(
+      electron,
+      family_prefix + "-veto",
+      family_prefix + "-loose",
+      family_prefix + "-medium",
+      family_prefix + "-tight");
+}
+
+inline int electronCutBasedValue(const pat::Electron &electron) {
+  if (electron.hasUserInt("cutBased")) {
+    return electron.userInt("cutBased");
+  }
+  if (electron.hasUserFloat("cutBased")) {
+    return static_cast<int>(electron.userFloat("cutBased"));
+  }
+
+  // Prefer explicit MiniAOD cut-based ID families in priority order.
+  // For Run-3 MiniAOD, this should resolve from RunIIIWinter22-V1.
+  for (const std::string &family : {
+           std::string("cutBasedElectronID-RunIIIWinter22-V1"),
+           std::string("cutBasedElectronID-Fall17-94X-V2"),
+           std::string("cutBasedElectronID-Fall17-94X-V1"),
+           std::string("cutBasedElectronID-Summer16-80X-V1"),
+       }) {
+    const int from_family = electronCutBasedValueFromFamily(electron, family);
+    if (from_family >= 0) {
+      return from_family;
+    }
+  }
+
+  // Embedded names used in some reprocessed content.
+  const int from_embedded = electronCutBasedValueFromNamedKeys(
+      electron, "cutBasedID_veto", "cutBasedID_loose", "cutBasedID_medium", "cutBasedID_tight");
+  if (from_embedded >= 0) {
+    return from_embedded;
+  }
+
+  bool sawCutBased = false;
+  bool passVeto = false;
+  bool passLoose = false;
+  bool passMedium = false;
+  bool passTight = false;
+
+  for (const auto &name : electron.userIntNames()) {
+    try {
+      const float value = static_cast<float>(electron.userInt(name));
+      updateElectronCutBasedFlags(name, value, sawCutBased, passVeto, passLoose, passMedium, passTight);
+    } catch (...) {
+    }
+  }
+  for (const auto &name : electron.userFloatNames()) {
+    try {
+      const float value = electron.userFloat(name);
+      updateElectronCutBasedFlags(name, value, sawCutBased, passVeto, passLoose, passMedium, passTight);
+    } catch (...) {
+    }
+  }
+  try {
+    for (const auto &pair : electron.electronIDs()) {
+      updateElectronCutBasedFlags(pair.first, pair.second, sawCutBased, passVeto, passLoose, passMedium, passTight);
+    }
+  } catch (...) {
+  }
+
+  const int cutBased = cutBasedFromFlags(sawCutBased, passVeto, passLoose, passMedium, passTight);
+  if (cutBased >= 0) {
+    return cutBased;
+  }
+  return -1;
+}
+
+inline const reco::Candidate* finalCopyInChain(const reco::Candidate* cand) {
+  if (!cand) {
+    return nullptr;
+  }
+  const reco::Candidate* cur = cand;
+  int depth = 0;
+  while (cur && depth < 50) {
+    const reco::Candidate* next_same = nullptr;
+    for (size_t i = 0; i < cur->numberOfDaughters(); ++i) {
+      const reco::Candidate* dau = cur->daughter(i);
+      if (dau && dau->pdgId() == cur->pdgId()) {
+        next_same = dau;
+        break;
+      }
+    }
+    if (!next_same) {
+      break;
+    }
+    cur = next_same;
+    ++depth;
+  }
+  return cur;
+}
+
+inline bool isDescendantOf(const reco::Candidate* cand, const reco::Candidate* ancestor) {
+  if (!cand || !ancestor) {
+    return false;
+  }
+  const reco::Candidate* cur = cand->mother();
+  int depth = 0;
+  while (cur && depth < 100) {
+    if (cur == ancestor) {
+      return true;
+    }
+    cur = cur->mother();
+    ++depth;
+  }
+  return false;
+}
+
+inline const reco::Candidate* bestDescendantByAbsPdg(const reco::Candidate* root, int abs_pdg) {
+  if (!root) {
+    return nullptr;
+  }
+  const reco::Candidate* best = nullptr;
+  float best_pt = -1.0f;
+  std::function<void(const reco::Candidate*, int)> visit = [&](const reco::Candidate* node, int depth) {
+    if (!node || depth > 40) {
+      return;
+    }
+    if (std::abs(node->pdgId()) == abs_pdg) {
+      const reco::Candidate* fc = finalCopyInChain(node);
+      const reco::Candidate* use = fc ? fc : node;
+      if (use->pt() > best_pt) {
+        best_pt = use->pt();
+        best = use;
+      }
+    }
+    for (size_t i = 0; i < node->numberOfDaughters(); ++i) {
+      visit(node->daughter(i), depth + 1);
+    }
+  };
+  visit(root, 0);
+  return best;
 }
 
 inline float getTauId(const pat::Tau &tau, const std::string &label, float fallback) {
@@ -713,6 +1046,7 @@ public:
 
   void beginJob() override;
   void analyze(const edm::Event &, const edm::EventSetup &) override;
+  void endJob() override;
 
 private:
   bool passHLT(const edm::Event &);
@@ -743,17 +1077,24 @@ private:
   std::vector<int> hlt_bits_;
 
   unsigned int minNJets_;
+  int maxNJets_;
   double jetMinPt_;
   double jetMaxEta_;
   std::string jetId_;
+  double jetLeptonOverlapDR_;
   bool usePuppiJets_;
   std::string tagInfoName_;
 
   std::string leptonMode_;
+  int maxNLeptons_;
   double muonMinPt_;
   double muonMaxEta_;
+  std::string muonId_;
+  double muonMaxRelIso04_;
   double electronMinPt_;
   double electronMaxEta_;
+  std::string electronId_;
+  double electronMaxRelIso03_;
   double tauMinPt_;
   double tauMaxEta_;
   double minCandidatePt_;
@@ -762,17 +1103,35 @@ private:
   unsigned int maxNpfCandidates_;
   unsigned int maxSvCandidates_;
   unsigned int maxPairwiseCandidates_;
+  bool writeLowLevelFeatures_;
+  bool requireChargeInference_;
+  std::string sampleName_;
+  std::string datasetName_;
+  double sampleXsecPb_;
+  double sampleSumWeights_;
+  double targetLumiPb_;
+  float sampleNormWeight_;
 
   std::string puWeightsFile_;
   std::string puWeightsHist_;
   std::string puWeightsUpHist_;
   std::string puWeightsDownHist_;
+  int debugPrintFirstNEvents_;
+  unsigned int debugEventsPrinted_;
+  uint64_t nSelectedJets_;
+  uint64_t nJetsWithOnnxCharge_;
+  uint64_t nJetsMissingOnnxCharge_;
   std::unique_ptr<TH1> puWeights_;
   std::unique_ptr<TH1> puWeightsUp_;
   std::unique_ptr<TH1> puWeightsDown_;
 
   TTree *tree_;
   TH1I *cutflow_;
+  TH1D *jobMetadata_;
+  uint64_t nEventsProcessed_;
+  uint64_t nEventsWritten_;
+  double sumGenWeightsProcessed_;
+  double sumGenWeightsWritten_;
 
   uint32_t run_;
   uint32_t lumi_;
@@ -787,7 +1146,47 @@ private:
   float met_pt_;
   float met_phi_;
   float met_sumEt_;
-  float top_mass_proxy_;
+  bool gen_ttbar_truth_available_;
+  float gen_top_pt_;
+  float gen_top_eta_;
+  float gen_top_phi_;
+  float gen_top_mass_;
+  int gen_top_pdgid_;
+  float gen_tbar_pt_;
+  float gen_tbar_eta_;
+  float gen_tbar_phi_;
+  float gen_tbar_mass_;
+  int gen_tbar_pdgid_;
+  float gen_b_pt_;
+  float gen_b_eta_;
+  float gen_b_phi_;
+  float gen_b_mass_;
+  int gen_b_pdgid_;
+  float gen_bbar_pt_;
+  float gen_bbar_eta_;
+  float gen_bbar_phi_;
+  float gen_bbar_mass_;
+  int gen_bbar_pdgid_;
+  float gen_lplus_pt_;
+  float gen_lplus_eta_;
+  float gen_lplus_phi_;
+  float gen_lplus_mass_;
+  int gen_lplus_pdgid_;
+  float gen_lminus_pt_;
+  float gen_lminus_eta_;
+  float gen_lminus_phi_;
+  float gen_lminus_mass_;
+  int gen_lminus_pdgid_;
+  float gen_nu_pt_;
+  float gen_nu_eta_;
+  float gen_nu_phi_;
+  float gen_nu_mass_;
+  int gen_nu_pdgid_;
+  float gen_nubar_pt_;
+  float gen_nubar_eta_;
+  float gen_nubar_phi_;
+  float gen_nubar_mass_;
+  int gen_nubar_pdgid_;
   float genWeight_;
   float puWeight_;
   float puWeightUp_;
@@ -796,6 +1195,7 @@ private:
   float prefireWeight_;
   float prefireWeightUp_;
   float prefireWeightDown_;
+  float eventWeight_;
   std::vector<float> lheWeights_;
   std::vector<std::string> lheWeightIds_;
   std::vector<float> pdfWeights_;
@@ -1094,16 +1494,23 @@ ChargeNtupleProducer::ChargeNtupleProducer(const edm::ParameterSet &cfg)
       applyHLT_(cfg.getParameter<bool>("applyHLT")),
       hltPaths_(cfg.getParameter<std::vector<std::string>>("hltPaths")),
       minNJets_(cfg.getParameter<unsigned int>("minNJets")),
+      maxNJets_(cfg.getParameter<int>("maxNJets")),
       jetMinPt_(cfg.getParameter<double>("jetMinPt")),
       jetMaxEta_(cfg.getParameter<double>("jetMaxEta")),
       jetId_(cfg.getParameter<std::string>("jetId")),
+      jetLeptonOverlapDR_(cfg.getParameter<double>("jetLeptonOverlapDR")),
       usePuppiJets_(cfg.getParameter<bool>("usePuppiJets")),
       tagInfoName_(cfg.getParameter<std::string>("tagInfoName")),
       leptonMode_(cfg.getParameter<std::string>("leptonMode")),
+      maxNLeptons_(cfg.getParameter<int>("maxNLeptons")),
       muonMinPt_(cfg.getParameter<double>("muonMinPt")),
       muonMaxEta_(cfg.getParameter<double>("muonMaxEta")),
+      muonId_(cfg.getParameter<std::string>("muonId")),
+      muonMaxRelIso04_(cfg.getParameter<double>("muonMaxRelIso04")),
       electronMinPt_(cfg.getParameter<double>("electronMinPt")),
       electronMaxEta_(cfg.getParameter<double>("electronMaxEta")),
+      electronId_(cfg.getParameter<std::string>("electronId")),
+      electronMaxRelIso03_(cfg.getParameter<double>("electronMaxRelIso03")),
       tauMinPt_(cfg.getParameter<double>("tauMinPt")),
       tauMaxEta_(cfg.getParameter<double>("tauMaxEta")),
       minCandidatePt_(cfg.getParameter<double>("minCandidatePt")),
@@ -1112,12 +1519,30 @@ ChargeNtupleProducer::ChargeNtupleProducer(const edm::ParameterSet &cfg)
       maxNpfCandidates_(cfg.getParameter<unsigned int>("maxNpfCandidates")),
       maxSvCandidates_(cfg.getParameter<unsigned int>("maxSvCandidates")),
       maxPairwiseCandidates_(cfg.getParameter<unsigned int>("maxPairwiseCandidates")),
+      writeLowLevelFeatures_(cfg.getParameter<bool>("writeLowLevelFeatures")),
+      requireChargeInference_(cfg.getParameter<bool>("requireChargeInference")),
+      sampleName_(cfg.getParameter<std::string>("sampleName")),
+      datasetName_(cfg.getParameter<std::string>("datasetName")),
+      sampleXsecPb_(cfg.getParameter<double>("sampleXsecPb")),
+      sampleSumWeights_(cfg.getParameter<double>("sampleSumWeights")),
+      targetLumiPb_(cfg.getParameter<double>("targetLumiPb")),
+      sampleNormWeight_(1.0f),
       puWeightsFile_(cfg.getParameter<std::string>("puWeightsFile")),
       puWeightsHist_(cfg.getParameter<std::string>("puWeightsHist")),
       puWeightsUpHist_(cfg.getParameter<std::string>("puWeightsUpHist")),
       puWeightsDownHist_(cfg.getParameter<std::string>("puWeightsDownHist")),
+      debugPrintFirstNEvents_(cfg.getParameter<int>("debugPrintFirstNEvents")),
+      debugEventsPrinted_(0),
+      nSelectedJets_(0),
+      nJetsWithOnnxCharge_(0),
+      nJetsMissingOnnxCharge_(0),
       tree_(nullptr),
       cutflow_(nullptr),
+      jobMetadata_(nullptr),
+      nEventsProcessed_(0),
+      nEventsWritten_(0),
+      sumGenWeightsProcessed_(0.0),
+      sumGenWeightsWritten_(0.0),
       run_(0),
       lumi_(0),
       event_(0),
@@ -1131,7 +1556,47 @@ ChargeNtupleProducer::ChargeNtupleProducer(const edm::ParameterSet &cfg)
       met_pt_(0.0f),
       met_phi_(0.0f),
       met_sumEt_(0.0f),
-      top_mass_proxy_(0.0f),
+      gen_ttbar_truth_available_(false),
+      gen_top_pt_(0.0f),
+      gen_top_eta_(0.0f),
+      gen_top_phi_(0.0f),
+      gen_top_mass_(0.0f),
+      gen_top_pdgid_(0),
+      gen_tbar_pt_(0.0f),
+      gen_tbar_eta_(0.0f),
+      gen_tbar_phi_(0.0f),
+      gen_tbar_mass_(0.0f),
+      gen_tbar_pdgid_(0),
+      gen_b_pt_(0.0f),
+      gen_b_eta_(0.0f),
+      gen_b_phi_(0.0f),
+      gen_b_mass_(0.0f),
+      gen_b_pdgid_(0),
+      gen_bbar_pt_(0.0f),
+      gen_bbar_eta_(0.0f),
+      gen_bbar_phi_(0.0f),
+      gen_bbar_mass_(0.0f),
+      gen_bbar_pdgid_(0),
+      gen_lplus_pt_(0.0f),
+      gen_lplus_eta_(0.0f),
+      gen_lplus_phi_(0.0f),
+      gen_lplus_mass_(0.0f),
+      gen_lplus_pdgid_(0),
+      gen_lminus_pt_(0.0f),
+      gen_lminus_eta_(0.0f),
+      gen_lminus_phi_(0.0f),
+      gen_lminus_mass_(0.0f),
+      gen_lminus_pdgid_(0),
+      gen_nu_pt_(0.0f),
+      gen_nu_eta_(0.0f),
+      gen_nu_phi_(0.0f),
+      gen_nu_mass_(0.0f),
+      gen_nu_pdgid_(0),
+      gen_nubar_pt_(0.0f),
+      gen_nubar_eta_(0.0f),
+      gen_nubar_phi_(0.0f),
+      gen_nubar_mass_(0.0f),
+      gen_nubar_pdgid_(0),
       genWeight_(1.0f),
       puWeight_(1.0f),
       puWeightUp_(1.0f),
@@ -1140,11 +1605,35 @@ ChargeNtupleProducer::ChargeNtupleProducer(const edm::ParameterSet &cfg)
       prefireWeight_(1.0f),
       prefireWeightUp_(1.0f),
       prefireWeightDown_(1.0f),
+      eventWeight_(1.0f),
       btagLabels_(cfg.getParameter<std::vector<std::string>>("btagDiscriminators")),
       btagLabelsCHS_(cfg.getParameter<std::vector<std::string>>("btagDiscriminatorsCHS")) {
   usesResource("TFileService");
   if (leptonMode_.empty()) {
     leptonMode_ = "hadronic";
+  }
+  leptonMode_ = toLowerCopy(leptonMode_);
+  if (muonId_.empty()) {
+    muonId_ = "none";
+  }
+  if (electronId_.empty()) {
+    electronId_ = "none";
+  }
+  muonId_ = toLowerCopy(muonId_);
+  electronId_ = toLowerCopy(electronId_);
+  if (!isSupportedMuonIdWp(muonId_)) {
+    throw cms::Exception("Configuration")
+        << "Unsupported muonId working point '" << muonId_
+        << "'. Allowed: none, loose, medium, tight";
+  }
+  if (!isSupportedElectronIdWp(electronId_)) {
+    throw cms::Exception("Configuration")
+        << "Unsupported electronId working point '" << electronId_
+        << "'. Allowed: none, veto, loose, medium, tight";
+  }
+  if (maxNLeptons_ < -1) {
+    throw cms::Exception("Configuration")
+        << "maxNLeptons must be -1 (disabled) or >=0, got " << maxNLeptons_;
   }
 
   if (!puWeightsFile_.empty() && !puWeightsHist_.empty()) {
@@ -1168,6 +1657,14 @@ ChargeNtupleProducer::ChargeNtupleProducer(const edm::ParameterSet &cfg)
       }
     }
   }
+
+  if (sampleXsecPb_ > 0.0 && sampleSumWeights_ > 0.0 && targetLumiPb_ > 0.0) {
+    sampleNormWeight_ = static_cast<float>((sampleXsecPb_ * targetLumiPb_) / sampleSumWeights_);
+  } else {
+    // Deferred normalization mode: keep per-event weights raw in this pass
+    // and apply xsec*lumi/sumW offline from aggregated metadata.
+    sampleNormWeight_ = 1.0f;
+  }
 }
 
 void ChargeNtupleProducer::beginJob() {
@@ -1184,7 +1681,47 @@ void ChargeNtupleProducer::beginJob() {
   tree_->Branch("met_pt", &met_pt_, "met_pt/F");
   tree_->Branch("met_phi", &met_phi_, "met_phi/F");
   tree_->Branch("met_sumEt", &met_sumEt_, "met_sumEt/F");
-  tree_->Branch("top_mass_proxy", &top_mass_proxy_, "top_mass_proxy/F");
+  tree_->Branch("gen_ttbar_truth_available", &gen_ttbar_truth_available_, "gen_ttbar_truth_available/O");
+  tree_->Branch("gen_top_pt", &gen_top_pt_, "gen_top_pt/F");
+  tree_->Branch("gen_top_eta", &gen_top_eta_, "gen_top_eta/F");
+  tree_->Branch("gen_top_phi", &gen_top_phi_, "gen_top_phi/F");
+  tree_->Branch("gen_top_mass", &gen_top_mass_, "gen_top_mass/F");
+  tree_->Branch("gen_top_pdgid", &gen_top_pdgid_, "gen_top_pdgid/I");
+  tree_->Branch("gen_tbar_pt", &gen_tbar_pt_, "gen_tbar_pt/F");
+  tree_->Branch("gen_tbar_eta", &gen_tbar_eta_, "gen_tbar_eta/F");
+  tree_->Branch("gen_tbar_phi", &gen_tbar_phi_, "gen_tbar_phi/F");
+  tree_->Branch("gen_tbar_mass", &gen_tbar_mass_, "gen_tbar_mass/F");
+  tree_->Branch("gen_tbar_pdgid", &gen_tbar_pdgid_, "gen_tbar_pdgid/I");
+  tree_->Branch("gen_b_pt", &gen_b_pt_, "gen_b_pt/F");
+  tree_->Branch("gen_b_eta", &gen_b_eta_, "gen_b_eta/F");
+  tree_->Branch("gen_b_phi", &gen_b_phi_, "gen_b_phi/F");
+  tree_->Branch("gen_b_mass", &gen_b_mass_, "gen_b_mass/F");
+  tree_->Branch("gen_b_pdgid", &gen_b_pdgid_, "gen_b_pdgid/I");
+  tree_->Branch("gen_bbar_pt", &gen_bbar_pt_, "gen_bbar_pt/F");
+  tree_->Branch("gen_bbar_eta", &gen_bbar_eta_, "gen_bbar_eta/F");
+  tree_->Branch("gen_bbar_phi", &gen_bbar_phi_, "gen_bbar_phi/F");
+  tree_->Branch("gen_bbar_mass", &gen_bbar_mass_, "gen_bbar_mass/F");
+  tree_->Branch("gen_bbar_pdgid", &gen_bbar_pdgid_, "gen_bbar_pdgid/I");
+  tree_->Branch("gen_lplus_pt", &gen_lplus_pt_, "gen_lplus_pt/F");
+  tree_->Branch("gen_lplus_eta", &gen_lplus_eta_, "gen_lplus_eta/F");
+  tree_->Branch("gen_lplus_phi", &gen_lplus_phi_, "gen_lplus_phi/F");
+  tree_->Branch("gen_lplus_mass", &gen_lplus_mass_, "gen_lplus_mass/F");
+  tree_->Branch("gen_lplus_pdgid", &gen_lplus_pdgid_, "gen_lplus_pdgid/I");
+  tree_->Branch("gen_lminus_pt", &gen_lminus_pt_, "gen_lminus_pt/F");
+  tree_->Branch("gen_lminus_eta", &gen_lminus_eta_, "gen_lminus_eta/F");
+  tree_->Branch("gen_lminus_phi", &gen_lminus_phi_, "gen_lminus_phi/F");
+  tree_->Branch("gen_lminus_mass", &gen_lminus_mass_, "gen_lminus_mass/F");
+  tree_->Branch("gen_lminus_pdgid", &gen_lminus_pdgid_, "gen_lminus_pdgid/I");
+  tree_->Branch("gen_nu_pt", &gen_nu_pt_, "gen_nu_pt/F");
+  tree_->Branch("gen_nu_eta", &gen_nu_eta_, "gen_nu_eta/F");
+  tree_->Branch("gen_nu_phi", &gen_nu_phi_, "gen_nu_phi/F");
+  tree_->Branch("gen_nu_mass", &gen_nu_mass_, "gen_nu_mass/F");
+  tree_->Branch("gen_nu_pdgid", &gen_nu_pdgid_, "gen_nu_pdgid/I");
+  tree_->Branch("gen_nubar_pt", &gen_nubar_pt_, "gen_nubar_pt/F");
+  tree_->Branch("gen_nubar_eta", &gen_nubar_eta_, "gen_nubar_eta/F");
+  tree_->Branch("gen_nubar_phi", &gen_nubar_phi_, "gen_nubar_phi/F");
+  tree_->Branch("gen_nubar_mass", &gen_nubar_mass_, "gen_nubar_mass/F");
+  tree_->Branch("gen_nubar_pdgid", &gen_nubar_pdgid_, "gen_nubar_pdgid/I");
   tree_->Branch("genWeight", &genWeight_, "genWeight/F");
   tree_->Branch("puWeight", &puWeight_, "puWeight/F");
   tree_->Branch("puWeightUp", &puWeightUp_, "puWeightUp/F");
@@ -1193,6 +1730,13 @@ void ChargeNtupleProducer::beginJob() {
   tree_->Branch("prefireWeight", &prefireWeight_, "prefireWeight/F");
   tree_->Branch("prefireWeightUp", &prefireWeightUp_, "prefireWeightUp/F");
   tree_->Branch("prefireWeightDown", &prefireWeightDown_, "prefireWeightDown/F");
+  tree_->Branch("sampleName", &sampleName_);
+  tree_->Branch("datasetName", &datasetName_);
+  tree_->Branch("sampleXsecPb", &sampleXsecPb_, "sampleXsecPb/D");
+  tree_->Branch("sampleSumWeights", &sampleSumWeights_, "sampleSumWeights/D");
+  tree_->Branch("targetLumiPb", &targetLumiPb_, "targetLumiPb/D");
+  tree_->Branch("sampleNormWeight", &sampleNormWeight_, "sampleNormWeight/F");
+  tree_->Branch("eventWeight", &eventWeight_, "eventWeight/F");
   tree_->Branch("lheWeights", &lheWeights_);
   tree_->Branch("lheWeightIds", &lheWeightIds_);
   tree_->Branch("pdfWeights", &pdfWeights_);
@@ -1392,109 +1936,108 @@ void ChargeNtupleProducer::beginJob() {
   tree_->Branch("hadPi0", &hadPi0_);
   tree_->Branch("nPi0", &nPi0_);
 
-  tree_->Branch("Cpfcan_eta", &Cpfcan_eta_);
-  tree_->Branch("Cpfcan_phi", &Cpfcan_phi_);
-  tree_->Branch("Cpfcan_BtagPf_trackEtaRel", &Cpfcan_BtagPf_trackEtaRel_);
-  tree_->Branch("Cpfcan_BtagPf_trackPtRel", &Cpfcan_BtagPf_trackPtRel_);
-  tree_->Branch("Cpfcan_BtagPf_trackPPar", &Cpfcan_BtagPf_trackPPar_);
-  tree_->Branch("Cpfcan_BtagPf_trackDeltaR", &Cpfcan_BtagPf_trackDeltaR_);
-  tree_->Branch("Cpfcan_BtagPf_trackPParRatio", &Cpfcan_BtagPf_trackPParRatio_);
-  tree_->Branch("Cpfcan_BtagPf_trackSip2dVal", &Cpfcan_BtagPf_trackSip2dVal_);
-  tree_->Branch("Cpfcan_BtagPf_trackSip2dSig", &Cpfcan_BtagPf_trackSip2dSig_);
-  tree_->Branch("Cpfcan_BtagPf_trackSip3dVal", &Cpfcan_BtagPf_trackSip3dVal_);
-  tree_->Branch("Cpfcan_BtagPf_trackSip3dSig", &Cpfcan_BtagPf_trackSip3dSig_);
-  tree_->Branch("Cpfcan_BtagPf_trackJetDistVal", &Cpfcan_BtagPf_trackJetDistVal_);
-  tree_->Branch("Cpfcan_ptrel", &Cpfcan_ptrel_);
-  tree_->Branch("Cpfcan_drminsv", &Cpfcan_drminsv_);
-  tree_->Branch("Cpfcan_VTX_ass", &Cpfcan_VTX_ass_);
-  tree_->Branch("Cpfcan_fromPV", &Cpfcan_fromPV_);
-  tree_->Branch("Cpfcan_puppiw", &Cpfcan_puppiw_);
-  tree_->Branch("Cpfcan_chi2", &Cpfcan_chi2_);
-  tree_->Branch("Cpfcan_quality", &Cpfcan_quality_);
-  tree_->Branch("Cpfcan_pt", &Cpfcan_pt_);
-  tree_->Branch("Cpfcan_charge", &Cpfcan_charge_);
-  tree_->Branch("Cpfcan_dz", &Cpfcan_dz_);
-  tree_->Branch("Cpfcan_dxy", &Cpfcan_dxy_);
-  tree_->Branch("Cpfcan_dxysig", &Cpfcan_dxysig_);
-  tree_->Branch("Cpfcan_BtagPf_trackDecayLen", &Cpfcan_BtagPf_trackDecayLen_);
-  tree_->Branch("Cpfcan_HadFrac", &Cpfcan_HadFrac_);
-  tree_->Branch("Cpfcan_CaloFrac", &Cpfcan_CaloFrac_);
-  tree_->Branch("Cpfcan_pdgID", &Cpfcan_pdgID_);
-  tree_->Branch("Cpfcan_lostInnerHits", &Cpfcan_lostInnerHits_);
-  tree_->Branch("Cpfcan_numberOfPixelHits", &Cpfcan_numberOfPixelHits_);
-  tree_->Branch("Cpfcan_numberOfStripHits", &Cpfcan_numberOfStripHits_);
-  tree_->Branch("Cpfcan_tau_signal", &Cpfcan_tau_signal_);
-  tree_->Branch("Cpfcan_px", &Cpfcan_px_);
-  tree_->Branch("Cpfcan_py", &Cpfcan_py_);
-  tree_->Branch("Cpfcan_pz", &Cpfcan_pz_);
-  tree_->Branch("Cpfcan_e", &Cpfcan_e_);
-  tree_->Branch("Cpfcan_isKaon", &Cpfcan_isKaon_);
-  tree_->Branch("Cpfcan_kaon_genCharge", &Cpfcan_kaon_genCharge_);
-  tree_->Branch("Cpfcan_kaon_motherPdgId", &Cpfcan_kaon_motherPdgId_);
-  tree_->Branch("Cpfcan_kaon_motherCharge", &Cpfcan_kaon_motherCharge_);
-
-  tree_->Branch("Npfcan_pt", &Npfcan_pt_);
-  tree_->Branch("Npfcan_ptrel", &Npfcan_ptrel_);
-  tree_->Branch("Npfcan_etarel", &Npfcan_etarel_);
-  tree_->Branch("Npfcan_phirel", &Npfcan_phirel_);
-  tree_->Branch("Npfcan_deltaR", &Npfcan_deltaR_);
-  tree_->Branch("Npfcan_isGamma", &Npfcan_isGamma_);
-  tree_->Branch("Npfcan_HadFrac", &Npfcan_HadFrac_);
-  tree_->Branch("Npfcan_drminsv", &Npfcan_drminsv_);
-  tree_->Branch("Npfcan_puppiw", &Npfcan_puppiw_);
-  tree_->Branch("Npfcan_tau_signal", &Npfcan_tau_signal_);
-  tree_->Branch("Npfcan_px", &Npfcan_px_);
-  tree_->Branch("Npfcan_py", &Npfcan_py_);
-  tree_->Branch("Npfcan_pz", &Npfcan_pz_);
-  tree_->Branch("Npfcan_e", &Npfcan_e_);
-
-  tree_->Branch("sv_pt", &sv_pt_);
-  tree_->Branch("sv_deltaR", &sv_deltaR_);
-  tree_->Branch("sv_mass", &sv_mass_);
-  tree_->Branch("sv_ntracks", &sv_ntracks_);
-  tree_->Branch("sv_etarel", &sv_etarel_);
-  tree_->Branch("sv_phirel", &sv_phirel_);
-  tree_->Branch("sv_chi2", &sv_chi2_);
-  tree_->Branch("sv_normchi2", &sv_normchi2_);
-  tree_->Branch("sv_dxy", &sv_dxy_);
-  tree_->Branch("sv_dxysig", &sv_dxysig_);
-  tree_->Branch("sv_d3d", &sv_d3d_);
-  tree_->Branch("sv_d3dsig", &sv_d3dsig_);
-  tree_->Branch("sv_costhetasvpv", &sv_costhetasvpv_);
-  tree_->Branch("sv_enratio", &sv_enratio_);
-  tree_->Branch("sv_charge_sum", &sv_charge_sum_);
-  tree_->Branch("sv_px", &sv_px_);
-  tree_->Branch("sv_py", &sv_py_);
-  tree_->Branch("sv_pz", &sv_pz_);
-  tree_->Branch("sv_e", &sv_e_);
-
-  tree_->Branch("pair_pca_distance", &pair_pca_distance_);
-  tree_->Branch("pair_pca_significance", &pair_pca_significance_);
-  tree_->Branch("pair_pcaSeed_x1", &pair_pcaSeed_x1_);
-  tree_->Branch("pair_pcaSeed_y1", &pair_pcaSeed_y1_);
-  tree_->Branch("pair_pcaSeed_z1", &pair_pcaSeed_z1_);
-  tree_->Branch("pair_pcaSeed_x2", &pair_pcaSeed_x2_);
-  tree_->Branch("pair_pcaSeed_y2", &pair_pcaSeed_y2_);
-  tree_->Branch("pair_pcaSeed_z2", &pair_pcaSeed_z2_);
-  tree_->Branch("pair_pcaSeed_xerr1", &pair_pcaSeed_xerr1_);
-  tree_->Branch("pair_pcaSeed_yerr1", &pair_pcaSeed_yerr1_);
-  tree_->Branch("pair_pcaSeed_zerr1", &pair_pcaSeed_zerr1_);
-  tree_->Branch("pair_pcaSeed_xerr2", &pair_pcaSeed_xerr2_);
-  tree_->Branch("pair_pcaSeed_yerr2", &pair_pcaSeed_yerr2_);
-  tree_->Branch("pair_pcaSeed_zerr2", &pair_pcaSeed_zerr2_);
-  tree_->Branch("pair_dotprod1", &pair_dotprod1_);
-  tree_->Branch("pair_dotprod2", &pair_dotprod2_);
-  tree_->Branch("pair_pca_dist1", &pair_pca_dist1_);
-  tree_->Branch("pair_pca_dist2", &pair_pca_dist2_);
-  tree_->Branch("pair_dotprod12_2D", &pair_dotprod12_2D_);
-  tree_->Branch("pair_dotprod12_2DV", &pair_dotprod12_2DV_);
-  tree_->Branch("pair_dotprod12_3D", &pair_dotprod12_3D_);
-  tree_->Branch("pair_dotprod12_3DV", &pair_dotprod12_3DV_);
-  tree_->Branch("pair_pca_jetAxis_dist", &pair_pca_jetAxis_dist_);
-  tree_->Branch("pair_pca_jetAxis_dotprod", &pair_pca_jetAxis_dotprod_);
-  tree_->Branch("pair_pca_jetAxis_dEta", &pair_pca_jetAxis_dEta_);
-  tree_->Branch("pair_pca_jetAxis_dPhi", &pair_pca_jetAxis_dPhi_);
-  tree_->Branch("pfcand_dist_vtx_12", &pfcand_dist_vtx_12_);
+  if (writeLowLevelFeatures_) {
+    tree_->Branch("Cpfcan_eta", &Cpfcan_eta_);
+    tree_->Branch("Cpfcan_phi", &Cpfcan_phi_);
+    tree_->Branch("Cpfcan_BtagPf_trackEtaRel", &Cpfcan_BtagPf_trackEtaRel_);
+    tree_->Branch("Cpfcan_BtagPf_trackPtRel", &Cpfcan_BtagPf_trackPtRel_);
+    tree_->Branch("Cpfcan_BtagPf_trackPPar", &Cpfcan_BtagPf_trackPPar_);
+    tree_->Branch("Cpfcan_BtagPf_trackDeltaR", &Cpfcan_BtagPf_trackDeltaR_);
+    tree_->Branch("Cpfcan_BtagPf_trackPParRatio", &Cpfcan_BtagPf_trackPParRatio_);
+    tree_->Branch("Cpfcan_BtagPf_trackSip2dVal", &Cpfcan_BtagPf_trackSip2dVal_);
+    tree_->Branch("Cpfcan_BtagPf_trackSip2dSig", &Cpfcan_BtagPf_trackSip2dSig_);
+    tree_->Branch("Cpfcan_BtagPf_trackSip3dVal", &Cpfcan_BtagPf_trackSip3dVal_);
+    tree_->Branch("Cpfcan_BtagPf_trackSip3dSig", &Cpfcan_BtagPf_trackSip3dSig_);
+    tree_->Branch("Cpfcan_BtagPf_trackJetDistVal", &Cpfcan_BtagPf_trackJetDistVal_);
+    tree_->Branch("Cpfcan_ptrel", &Cpfcan_ptrel_);
+    tree_->Branch("Cpfcan_drminsv", &Cpfcan_drminsv_);
+    tree_->Branch("Cpfcan_VTX_ass", &Cpfcan_VTX_ass_);
+    tree_->Branch("Cpfcan_fromPV", &Cpfcan_fromPV_);
+    tree_->Branch("Cpfcan_puppiw", &Cpfcan_puppiw_);
+    tree_->Branch("Cpfcan_chi2", &Cpfcan_chi2_);
+    tree_->Branch("Cpfcan_quality", &Cpfcan_quality_);
+    tree_->Branch("Cpfcan_pt", &Cpfcan_pt_);
+    tree_->Branch("Cpfcan_charge", &Cpfcan_charge_);
+    tree_->Branch("Cpfcan_dz", &Cpfcan_dz_);
+    tree_->Branch("Cpfcan_dxy", &Cpfcan_dxy_);
+    tree_->Branch("Cpfcan_dxysig", &Cpfcan_dxysig_);
+    tree_->Branch("Cpfcan_BtagPf_trackDecayLen", &Cpfcan_BtagPf_trackDecayLen_);
+    tree_->Branch("Cpfcan_HadFrac", &Cpfcan_HadFrac_);
+    tree_->Branch("Cpfcan_CaloFrac", &Cpfcan_CaloFrac_);
+    tree_->Branch("Cpfcan_pdgID", &Cpfcan_pdgID_);
+    tree_->Branch("Cpfcan_lostInnerHits", &Cpfcan_lostInnerHits_);
+    tree_->Branch("Cpfcan_numberOfPixelHits", &Cpfcan_numberOfPixelHits_);
+    tree_->Branch("Cpfcan_numberOfStripHits", &Cpfcan_numberOfStripHits_);
+    tree_->Branch("Cpfcan_tau_signal", &Cpfcan_tau_signal_);
+    tree_->Branch("Cpfcan_px", &Cpfcan_px_);
+    tree_->Branch("Cpfcan_py", &Cpfcan_py_);
+    tree_->Branch("Cpfcan_pz", &Cpfcan_pz_);
+    tree_->Branch("Cpfcan_e", &Cpfcan_e_);
+    tree_->Branch("Cpfcan_isKaon", &Cpfcan_isKaon_);
+    tree_->Branch("Cpfcan_kaon_genCharge", &Cpfcan_kaon_genCharge_);
+    tree_->Branch("Cpfcan_kaon_motherPdgId", &Cpfcan_kaon_motherPdgId_);
+    tree_->Branch("Cpfcan_kaon_motherCharge", &Cpfcan_kaon_motherCharge_);
+    tree_->Branch("Npfcan_pt", &Npfcan_pt_);
+    tree_->Branch("Npfcan_ptrel", &Npfcan_ptrel_);
+    tree_->Branch("Npfcan_etarel", &Npfcan_etarel_);
+    tree_->Branch("Npfcan_phirel", &Npfcan_phirel_);
+    tree_->Branch("Npfcan_deltaR", &Npfcan_deltaR_);
+    tree_->Branch("Npfcan_isGamma", &Npfcan_isGamma_);
+    tree_->Branch("Npfcan_HadFrac", &Npfcan_HadFrac_);
+    tree_->Branch("Npfcan_drminsv", &Npfcan_drminsv_);
+    tree_->Branch("Npfcan_puppiw", &Npfcan_puppiw_);
+    tree_->Branch("Npfcan_tau_signal", &Npfcan_tau_signal_);
+    tree_->Branch("Npfcan_px", &Npfcan_px_);
+    tree_->Branch("Npfcan_py", &Npfcan_py_);
+    tree_->Branch("Npfcan_pz", &Npfcan_pz_);
+    tree_->Branch("Npfcan_e", &Npfcan_e_);
+    tree_->Branch("sv_pt", &sv_pt_);
+    tree_->Branch("sv_deltaR", &sv_deltaR_);
+    tree_->Branch("sv_mass", &sv_mass_);
+    tree_->Branch("sv_ntracks", &sv_ntracks_);
+    tree_->Branch("sv_etarel", &sv_etarel_);
+    tree_->Branch("sv_phirel", &sv_phirel_);
+    tree_->Branch("sv_chi2", &sv_chi2_);
+    tree_->Branch("sv_normchi2", &sv_normchi2_);
+    tree_->Branch("sv_dxy", &sv_dxy_);
+    tree_->Branch("sv_dxysig", &sv_dxysig_);
+    tree_->Branch("sv_d3d", &sv_d3d_);
+    tree_->Branch("sv_d3dsig", &sv_d3dsig_);
+    tree_->Branch("sv_costhetasvpv", &sv_costhetasvpv_);
+    tree_->Branch("sv_enratio", &sv_enratio_);
+    tree_->Branch("sv_charge_sum", &sv_charge_sum_);
+    tree_->Branch("sv_px", &sv_px_);
+    tree_->Branch("sv_py", &sv_py_);
+    tree_->Branch("sv_pz", &sv_pz_);
+    tree_->Branch("sv_e", &sv_e_);
+    tree_->Branch("pair_pca_distance", &pair_pca_distance_);
+    tree_->Branch("pair_pca_significance", &pair_pca_significance_);
+    tree_->Branch("pair_pcaSeed_x1", &pair_pcaSeed_x1_);
+    tree_->Branch("pair_pcaSeed_y1", &pair_pcaSeed_y1_);
+    tree_->Branch("pair_pcaSeed_z1", &pair_pcaSeed_z1_);
+    tree_->Branch("pair_pcaSeed_x2", &pair_pcaSeed_x2_);
+    tree_->Branch("pair_pcaSeed_y2", &pair_pcaSeed_y2_);
+    tree_->Branch("pair_pcaSeed_z2", &pair_pcaSeed_z2_);
+    tree_->Branch("pair_pcaSeed_xerr1", &pair_pcaSeed_xerr1_);
+    tree_->Branch("pair_pcaSeed_yerr1", &pair_pcaSeed_yerr1_);
+    tree_->Branch("pair_pcaSeed_zerr1", &pair_pcaSeed_zerr1_);
+    tree_->Branch("pair_pcaSeed_xerr2", &pair_pcaSeed_xerr2_);
+    tree_->Branch("pair_pcaSeed_yerr2", &pair_pcaSeed_yerr2_);
+    tree_->Branch("pair_pcaSeed_zerr2", &pair_pcaSeed_zerr2_);
+    tree_->Branch("pair_dotprod1", &pair_dotprod1_);
+    tree_->Branch("pair_dotprod2", &pair_dotprod2_);
+    tree_->Branch("pair_pca_dist1", &pair_pca_dist1_);
+    tree_->Branch("pair_pca_dist2", &pair_pca_dist2_);
+    tree_->Branch("pair_dotprod12_2D", &pair_dotprod12_2D_);
+    tree_->Branch("pair_dotprod12_2DV", &pair_dotprod12_2DV_);
+    tree_->Branch("pair_dotprod12_3D", &pair_dotprod12_3D_);
+    tree_->Branch("pair_dotprod12_3DV", &pair_dotprod12_3DV_);
+    tree_->Branch("pair_pca_jetAxis_dist", &pair_pca_jetAxis_dist_);
+    tree_->Branch("pair_pca_jetAxis_dotprod", &pair_pca_jetAxis_dotprod_);
+    tree_->Branch("pair_pca_jetAxis_dEta", &pair_pca_jetAxis_dEta_);
+    tree_->Branch("pair_pca_jetAxis_dPhi", &pair_pca_jetAxis_dPhi_);
+    tree_->Branch("pfcand_dist_vtx_12", &pfcand_dist_vtx_12_);
+  }
 
   cutflow_ = new TH1I("cutflow", "cutflow", 4, 0.5, 4.5);
   cutflow_->SetDirectory(&output_file);
@@ -1502,6 +2045,16 @@ void ChargeNtupleProducer::beginJob() {
   cutflow_->GetXaxis()->SetBinLabel(2, "pass_hlt");
   cutflow_->GetXaxis()->SetBinLabel(3, "pass_objects");
   cutflow_->GetXaxis()->SetBinLabel(4, "written");
+
+  jobMetadata_ = new TH1D("job_metadata", "job_metadata", 7, 0.5, 7.5);
+  jobMetadata_->SetDirectory(&output_file);
+  jobMetadata_->GetXaxis()->SetBinLabel(1, "n_events_processed");
+  jobMetadata_->GetXaxis()->SetBinLabel(2, "n_events_written");
+  jobMetadata_->GetXaxis()->SetBinLabel(3, "sum_gen_weight_processed");
+  jobMetadata_->GetXaxis()->SetBinLabel(4, "sum_gen_weight_written");
+  jobMetadata_->GetXaxis()->SetBinLabel(5, "sample_xsec_pb");
+  jobMetadata_->GetXaxis()->SetBinLabel(6, "sample_sum_weights_input");
+  jobMetadata_->GetXaxis()->SetBinLabel(7, "target_lumi_pb");
 }
 
 bool ChargeNtupleProducer::passJetId(const pat::Jet &jet) const {
@@ -1571,6 +2124,12 @@ bool ChargeNtupleProducer::passHLT(const edm::Event &event) {
 void ChargeNtupleProducer::analyze(const edm::Event &event, const edm::EventSetup &setup) {
   cutflow_->Fill(1);
 
+  edm::Handle<GenEventInfoProduct> genInfo;
+  event.getByToken(genInfoToken_, genInfo);
+  const float genWeightForCounters = genInfo.isValid() ? static_cast<float>(genInfo->weight()) : 1.0f;
+  ++nEventsProcessed_;
+  sumGenWeightsProcessed_ += static_cast<double>(genWeightForCounters);
+
   pass_hlt_ = passHLT(event);
   if (!pass_hlt_) {
     return;
@@ -1589,7 +2148,6 @@ void ChargeNtupleProducer::analyze(const edm::Event &event, const edm::EventSetu
   edm::Handle<reco::VertexCompositePtrCandidateCollection> secVertices;
   edm::Handle<reco::GenParticleCollection> genParticles;
   edm::Handle<reco::GenParticleCollection> prunedGenParticles;
-  edm::Handle<GenEventInfoProduct> genInfo;
   edm::Handle<std::vector<PileupSummaryInfo>> pileupInfos;
   edm::Handle<LHEEventProduct> lheInfo;
   edm::Handle<float> prefireWeight;
@@ -1607,7 +2165,6 @@ void ChargeNtupleProducer::analyze(const edm::Event &event, const edm::EventSetu
   event.getByToken(secVerticesToken_, secVertices);
   event.getByToken(genParticlesToken_, genParticles);
   event.getByToken(prunedGenParticlesToken_, prunedGenParticles);
-  event.getByToken(genInfoToken_, genInfo);
   event.getByToken(pileupToken_, pileupInfos);
   event.getByToken(lheToken_, lheInfo);
   event.getByToken(prefireWeightToken_, prefireWeight);
@@ -1623,7 +2180,47 @@ void ChargeNtupleProducer::analyze(const edm::Event &event, const edm::EventSetu
   met_pt_ = 0.0f;
   met_phi_ = 0.0f;
   met_sumEt_ = 0.0f;
-  top_mass_proxy_ = 0.0f;
+  gen_ttbar_truth_available_ = false;
+  gen_top_pt_ = 0.0f;
+  gen_top_eta_ = 0.0f;
+  gen_top_phi_ = 0.0f;
+  gen_top_mass_ = 0.0f;
+  gen_top_pdgid_ = 0;
+  gen_tbar_pt_ = 0.0f;
+  gen_tbar_eta_ = 0.0f;
+  gen_tbar_phi_ = 0.0f;
+  gen_tbar_mass_ = 0.0f;
+  gen_tbar_pdgid_ = 0;
+  gen_b_pt_ = 0.0f;
+  gen_b_eta_ = 0.0f;
+  gen_b_phi_ = 0.0f;
+  gen_b_mass_ = 0.0f;
+  gen_b_pdgid_ = 0;
+  gen_bbar_pt_ = 0.0f;
+  gen_bbar_eta_ = 0.0f;
+  gen_bbar_phi_ = 0.0f;
+  gen_bbar_mass_ = 0.0f;
+  gen_bbar_pdgid_ = 0;
+  gen_lplus_pt_ = 0.0f;
+  gen_lplus_eta_ = 0.0f;
+  gen_lplus_phi_ = 0.0f;
+  gen_lplus_mass_ = 0.0f;
+  gen_lplus_pdgid_ = 0;
+  gen_lminus_pt_ = 0.0f;
+  gen_lminus_eta_ = 0.0f;
+  gen_lminus_phi_ = 0.0f;
+  gen_lminus_mass_ = 0.0f;
+  gen_lminus_pdgid_ = 0;
+  gen_nu_pt_ = 0.0f;
+  gen_nu_eta_ = 0.0f;
+  gen_nu_phi_ = 0.0f;
+  gen_nu_mass_ = 0.0f;
+  gen_nu_pdgid_ = 0;
+  gen_nubar_pt_ = 0.0f;
+  gen_nubar_eta_ = 0.0f;
+  gen_nubar_phi_ = 0.0f;
+  gen_nubar_mass_ = 0.0f;
+  gen_nubar_pdgid_ = 0;
   if (mets.isValid() && !mets->empty()) {
     const auto &met = mets->front();
     met_pt_ = static_cast<float>(met.pt());
@@ -1661,6 +2258,157 @@ void ChargeNtupleProducer::analyze(const edm::Event &event, const edm::EventSetu
   prefireWeight_ = prefireWeight.isValid() ? *prefireWeight : 1.0f;
   prefireWeightUp_ = prefireWeightUp.isValid() ? *prefireWeightUp : 1.0f;
   prefireWeightDown_ = prefireWeightDown.isValid() ? *prefireWeightDown : 1.0f;
+  eventWeight_ = genWeight_ * puWeight_ * prefireWeight_ * sampleNormWeight_;
+
+  if (prunedGenParticles.isValid()) {
+    const reco::Candidate* top = nullptr;
+    const reco::Candidate* tbar = nullptr;
+    for (const auto& gp : *prunedGenParticles) {
+      if (gp.pdgId() == 6) {
+        const reco::Candidate* fc = finalCopyInChain(&gp);
+        if (!top || (fc && fc->pt() > top->pt())) {
+          top = fc ? fc : &gp;
+        }
+      } else if (gp.pdgId() == -6) {
+        const reco::Candidate* fc = finalCopyInChain(&gp);
+        if (!tbar || (fc && fc->pt() > tbar->pt())) {
+          tbar = fc ? fc : &gp;
+        }
+      }
+    }
+
+    const reco::Candidate* b_from_top = nullptr;
+    const reco::Candidate* bbar_from_tbar = nullptr;
+    const reco::Candidate* wplus = nullptr;
+    const reco::Candidate* wminus = nullptr;
+    if (top) {
+      for (size_t i = 0; i < top->numberOfDaughters(); ++i) {
+        const reco::Candidate* dau = top->daughter(i);
+        if (!dau) {
+          continue;
+        }
+        if (dau->pdgId() == 5) {
+          b_from_top = finalCopyInChain(dau);
+        } else if (dau->pdgId() == 24) {
+          wplus = finalCopyInChain(dau);
+        }
+      }
+    }
+    if (tbar) {
+      for (size_t i = 0; i < tbar->numberOfDaughters(); ++i) {
+        const reco::Candidate* dau = tbar->daughter(i);
+        if (!dau) {
+          continue;
+        }
+        if (dau->pdgId() == -5) {
+          bbar_from_tbar = finalCopyInChain(dau);
+        } else if (dau->pdgId() == -24) {
+          wminus = finalCopyInChain(dau);
+        }
+      }
+    }
+
+    const reco::Candidate* lplus = bestDescendantByAbsPdg(wplus, 11);
+    const reco::Candidate* lplus_mu = bestDescendantByAbsPdg(wplus, 13);
+    if ((!lplus || (lplus_mu && lplus_mu->pt() > lplus->pt()))) {
+      lplus = lplus_mu;
+    }
+    const reco::Candidate* lplus_tau = bestDescendantByAbsPdg(wplus, 15);
+    if ((!lplus || (lplus_tau && lplus_tau->pt() > lplus->pt()))) {
+      lplus = lplus_tau;
+    }
+
+    const reco::Candidate* lminus = bestDescendantByAbsPdg(wminus, 11);
+    const reco::Candidate* lminus_mu = bestDescendantByAbsPdg(wminus, 13);
+    if ((!lminus || (lminus_mu && lminus_mu->pt() > lminus->pt()))) {
+      lminus = lminus_mu;
+    }
+    const reco::Candidate* lminus_tau = bestDescendantByAbsPdg(wminus, 15);
+    if ((!lminus || (lminus_tau && lminus_tau->pt() > lminus->pt()))) {
+      lminus = lminus_tau;
+    }
+
+    const reco::Candidate* nu = nullptr;
+    const reco::Candidate* nubar = nullptr;
+    for (const auto& gp : *prunedGenParticles) {
+      const int apdg = std::abs(gp.pdgId());
+      if (apdg != 12 && apdg != 14 && apdg != 16) {
+        continue;
+      }
+      const reco::Candidate* fc = finalCopyInChain(&gp);
+      const reco::Candidate* cand = fc ? fc : &gp;
+      if (isDescendantOf(cand, wplus) && cand->pdgId() > 0) {
+        if (!nu || cand->pt() > nu->pt()) {
+          nu = cand;
+        }
+      } else if (isDescendantOf(cand, wminus) && cand->pdgId() < 0) {
+        if (!nubar || cand->pt() > nubar->pt()) {
+          nubar = cand;
+        }
+      }
+    }
+
+    if (top && tbar && b_from_top && bbar_from_tbar && lplus && lminus && nu && nubar) {
+      gen_ttbar_truth_available_ = true;
+    }
+    if (top) {
+      gen_top_pt_ = top->pt();
+      gen_top_eta_ = top->eta();
+      gen_top_phi_ = top->phi();
+      gen_top_mass_ = top->mass();
+      gen_top_pdgid_ = top->pdgId();
+    }
+    if (tbar) {
+      gen_tbar_pt_ = tbar->pt();
+      gen_tbar_eta_ = tbar->eta();
+      gen_tbar_phi_ = tbar->phi();
+      gen_tbar_mass_ = tbar->mass();
+      gen_tbar_pdgid_ = tbar->pdgId();
+    }
+    if (b_from_top) {
+      gen_b_pt_ = b_from_top->pt();
+      gen_b_eta_ = b_from_top->eta();
+      gen_b_phi_ = b_from_top->phi();
+      gen_b_mass_ = b_from_top->mass();
+      gen_b_pdgid_ = b_from_top->pdgId();
+    }
+    if (bbar_from_tbar) {
+      gen_bbar_pt_ = bbar_from_tbar->pt();
+      gen_bbar_eta_ = bbar_from_tbar->eta();
+      gen_bbar_phi_ = bbar_from_tbar->phi();
+      gen_bbar_mass_ = bbar_from_tbar->mass();
+      gen_bbar_pdgid_ = bbar_from_tbar->pdgId();
+    }
+    if (lplus) {
+      gen_lplus_pt_ = lplus->pt();
+      gen_lplus_eta_ = lplus->eta();
+      gen_lplus_phi_ = lplus->phi();
+      gen_lplus_mass_ = lplus->mass();
+      gen_lplus_pdgid_ = lplus->pdgId();
+    }
+    if (lminus) {
+      gen_lminus_pt_ = lminus->pt();
+      gen_lminus_eta_ = lminus->eta();
+      gen_lminus_phi_ = lminus->phi();
+      gen_lminus_mass_ = lminus->mass();
+      gen_lminus_pdgid_ = lminus->pdgId();
+    }
+    if (nu) {
+      gen_nu_pt_ = nu->pt();
+      gen_nu_eta_ = nu->eta();
+      gen_nu_phi_ = nu->phi();
+      gen_nu_mass_ = nu->mass();
+      gen_nu_pdgid_ = nu->pdgId();
+    }
+    if (nubar) {
+      gen_nubar_pt_ = nubar->pt();
+      gen_nubar_eta_ = nubar->eta();
+      gen_nubar_phi_ = nubar->phi();
+      gen_nubar_mass_ = nubar->mass();
+      gen_nubar_pdgid_ = nubar->pdgId();
+    }
+  }
+
   lheWeights_.clear();
   lheWeightIds_.clear();
   pdfWeights_.clear();
@@ -1721,28 +2469,96 @@ void ChargeNtupleProducer::analyze(const edm::Event &event, const edm::EventSetu
   }
 
   nMuonSel_ = 0;
+  nElectronSel_ = 0;
   nTauSel_ = 0;
+  std::vector<std::pair<float, float>> selectedLeptonEtaPhi;
+  selectedLeptonEtaPhi.reserve(4);
+  const bool require_exactly_one_emu = (leptonMode_ == "dilepton_emu" || leptonMode_ == "dilepton_emu_os");
   float best_lepton_pt = -1.0f;
+  const bool doDebugPrint =
+      (debugPrintFirstNEvents_ > 0) && (debugEventsPrinted_ < static_cast<unsigned int>(debugPrintFirstNEvents_));
+  struct JetChargeDebugRow {
+    float pt = 0.0f;
+    float eta = 0.0f;
+    float charge_k05 = 0.0f;
+    float charge_score = -1.0f;
+    float robust_b = -1.0f;
+    float robust_cvb = -1.0f;
+    float robust_cvl = -1.0f;
+    float robust_qg = -1.0f;
+    float part_pos = -1.0f;
+    float part_neg = -1.0f;
+    float part_zero = -1.0f;
+    float part_pos_neg = -1.0f;
+    std::string label_robust_b;
+    std::string label_robust_cvb;
+    std::string label_robust_cvl;
+    std::string label_robust_qg;
+    std::string label_part_pos;
+    std::string label_part_neg;
+    std::string label_part_zero;
+    std::string label_part_pos_neg;
+    std::string charge_source;
+    std::string available_charge_related_discriminators;
+  };
+  std::vector<JetChargeDebugRow> debugRows;
+  debugRows.reserve(4);
+  struct ElectronIdDebugRow {
+    float pt = 0.0f;
+    float eta = 0.0f;
+    float rel_iso03 = 0.0f;
+    int charge = 0;
+    int cutbased_resolved = -1;
+    std::string user_int_names;
+    std::string user_float_names;
+    std::string electron_ids;
+  };
+  std::vector<ElectronIdDebugRow> debugElectronRows;
+  debugElectronRows.reserve(3);
   if (muons.isValid()) {
     for (const auto &muon : *muons) {
       if (muon.pt() < muonMinPt_ || std::abs(muon.eta()) > muonMaxEta_) {
         continue;
       }
+      auto mu_iso = muon.pfIsolationR04();
+      float mu_rel_iso = (mu_iso.sumChargedHadronPt +
+                          std::max(0.0f, mu_iso.sumNeutralHadronEt + mu_iso.sumPhotonEt - 0.5f * mu_iso.sumPUPt)) /
+                         muon.pt();
+      const bool is_loose = muon.isLooseMuon();
+      const bool is_medium = muon.isMediumMuon();
+      const bool is_tight = primary_vertex ? muon.isTightMuon(*primary_vertex) : false;
+      bool pass_mu_id = true;
+      if (muonId_ == "loose") {
+        pass_mu_id = is_loose;
+      } else if (muonId_ == "medium") {
+        pass_mu_id = is_medium;
+      } else if (muonId_ == "tight") {
+        pass_mu_id = is_tight;
+      }
+      if (!pass_mu_id) {
+        continue;
+      }
+      if (muonMaxRelIso04_ >= 0.0 && mu_rel_iso > muonMaxRelIso04_) {
+        continue;
+      }
+
       ++nMuonSel_;
       muon_pt_.push_back(static_cast<float>(muon.pt()));
       muon_eta_.push_back(static_cast<float>(muon.eta()));
       muon_phi_.push_back(static_cast<float>(muon.phi()));
       muon_mass_.push_back(static_cast<float>(muon.mass()));
       muon_charge_.push_back(muon.charge());
-      auto mu_iso = muon.pfIsolationR04();
-      float mu_rel_iso = (mu_iso.sumChargedHadronPt +
-                          std::max(0.0f, mu_iso.sumNeutralHadronEt + mu_iso.sumPhotonEt - 0.5f * mu_iso.sumPUPt)) /
-                         muon.pt();
       muon_relIso04_.push_back(mu_rel_iso);
-      muon_isLoose_.push_back(muon.isLooseMuon() ? 1 : 0);
-      muon_isMedium_.push_back(muon.isMediumMuon() ? 1 : 0);
-      bool is_tight = primary_vertex ? muon.isTightMuon(*primary_vertex) : false;
+      muon_isLoose_.push_back(is_loose ? 1 : 0);
+      muon_isMedium_.push_back(is_medium ? 1 : 0);
       muon_isTight_.push_back(is_tight ? 1 : 0);
+      selectedLeptonEtaPhi.emplace_back(static_cast<float>(muon.eta()), static_cast<float>(muon.phi()));
+      if (maxNLeptons_ >= 0 && (nMuonSel_ + nElectronSel_) > maxNLeptons_) {
+        return;
+      }
+      if (require_exactly_one_emu && nMuonSel_ > 1) {
+        return;
+      }
       if (muon.pt() > best_lepton_pt) {
         best_lepton_pt = muon.pt();
         lepton_pt_ = muon.pt();
@@ -1755,32 +2571,65 @@ void ChargeNtupleProducer::analyze(const edm::Event &event, const edm::EventSetu
     }
   }
 
-  nElectronSel_ = 0;
   if (electrons.isValid()) {
     for (const auto &electron : *electrons) {
       if (electron.pt() < electronMinPt_ || std::abs(electron.eta()) > electronMaxEta_) {
         continue;
       }
+      auto el_iso = electron.pfIsolationVariables();
+      float el_rel_iso =
+          (el_iso.sumChargedHadronPt +
+           std::max(0.0f, el_iso.sumNeutralHadronEt + el_iso.sumPhotonEt - 0.5f * el_iso.sumPUPt)) /
+          electron.pt();
+      const int cutbased = electronCutBasedValue(electron);
+      const int min_el_cutbased = minElectronCutBasedForWp(electronId_);
+      const bool pass_el_id = (min_el_cutbased < 0) || (cutbased >= min_el_cutbased);
+      if (doDebugPrint && debugElectronRows.size() < 3) {
+        ElectronIdDebugRow row;
+        row.pt = static_cast<float>(electron.pt());
+        row.eta = static_cast<float>(electron.eta());
+        row.rel_iso03 = el_rel_iso;
+        row.charge = electron.charge();
+        row.cutbased_resolved = cutbased;
+        row.user_int_names = joinStrings(electron.userIntNames());
+        row.user_float_names = joinStrings(electron.userFloatNames());
+        std::vector<std::string> id_entries;
+        id_entries.reserve(16);
+        try {
+          for (const auto &pair : electron.electronIDs()) {
+            std::ostringstream entry;
+            entry << pair.first << "=" << pair.second;
+            id_entries.push_back(entry.str());
+          }
+        } catch (...) {
+          id_entries.push_back("<electronIDs unavailable>");
+        }
+        row.electron_ids = joinStrings(id_entries);
+        debugElectronRows.push_back(std::move(row));
+      }
+      if (!pass_el_id) {
+        continue;
+      }
+      if (electronMaxRelIso03_ >= 0.0 && el_rel_iso > electronMaxRelIso03_) {
+        continue;
+      }
+
       ++nElectronSel_;
       electron_pt_.push_back(static_cast<float>(electron.pt()));
       electron_eta_.push_back(static_cast<float>(electron.eta()));
       electron_phi_.push_back(static_cast<float>(electron.phi()));
       electron_mass_.push_back(static_cast<float>(electron.mass()));
       electron_charge_.push_back(electron.charge());
-      auto el_iso = electron.pfIsolationVariables();
-      float el_rel_iso =
-          (el_iso.sumChargedHadronPt +
-           std::max(0.0f, el_iso.sumNeutralHadronEt + el_iso.sumPhotonEt - 0.5f * el_iso.sumPUPt)) /
-          electron.pt();
       electron_relIso03_.push_back(el_rel_iso);
       electron_isEB_.push_back(electron.isEB() ? 1 : 0);
-      int cutbased = -1;
-      if (electron.hasUserInt("cutBased")) {
-        cutbased = electron.userInt("cutBased");
-      } else if (electron.hasUserFloat("cutBased")) {
-        cutbased = static_cast<int>(electron.userFloat("cutBased"));
-      }
       electron_cutBased_.push_back(cutbased);
+      selectedLeptonEtaPhi.emplace_back(static_cast<float>(electron.eta()), static_cast<float>(electron.phi()));
+      if (maxNLeptons_ >= 0 && (nMuonSel_ + nElectronSel_) > maxNLeptons_) {
+        return;
+      }
+      if (require_exactly_one_emu && nElectronSel_ > 1) {
+        return;
+      }
       if (electron.pt() > best_lepton_pt) {
         best_lepton_pt = electron.pt();
         lepton_pt_ = electron.pt();
@@ -1791,6 +2640,10 @@ void ChargeNtupleProducer::analyze(const edm::Event &event, const edm::EventSetu
         lepton_pdgid_ = 11 * (electron.charge() > 0 ? -1 : 1);
       }
     }
+  }
+
+  if (maxNLeptons_ >= 0 && (nMuonSel_ + nElectronSel_) > maxNLeptons_) {
+    return;
   }
 
   bool passLeptons = true;
@@ -1806,9 +2659,54 @@ void ChargeNtupleProducer::analyze(const edm::Event &event, const edm::EventSetu
     passLeptons = (nMuonSel_ + nElectronSel_ >= 1);
   } else if (leptonMode_ == "dilepton") {
     passLeptons = (nMuonSel_ + nElectronSel_ >= 2);
+  } else if (leptonMode_ == "dilepton_emu") {
+    passLeptons = (nMuonSel_ == 1 && nElectronSel_ == 1);
+  } else if (leptonMode_ == "dilepton_emu_os") {
+    passLeptons = (nMuonSel_ == 1 && nElectronSel_ == 1 && (muon_charge_[0] * electron_charge_[0] < 0));
+  } else {
+    throw cms::Exception("Configuration")
+        << "Unsupported leptonMode '" << leptonMode_
+        << "'. Allowed modes: hadronic, single_muon, single_electron, single_lepton, at_least_one_lepton, "
+           "dilepton, dilepton_emu, dilepton_emu_os";
   }
 
   if (!passLeptons) {
+    return;
+  }
+
+  const auto overlapsSelectedLepton = [&](const pat::Jet &jet) -> bool {
+    if (jetLeptonOverlapDR_ <= 0.0) {
+      return false;
+    }
+    for (const auto &lep : selectedLeptonEtaPhi) {
+      if (reco::deltaR(jet.eta(), jet.phi(), lep.first, lep.second) < jetLeptonOverlapDR_) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  // Fast preselection: count selected jets before expensive feature extraction.
+  // This allows early rejection on jet multiplicity (especially maxNJets) to speed up processing.
+  int nJetsPreselected = 0;
+  if (jets_view) {
+    for (const auto &jet : *jets_view) {
+      if (jet.pt() < jetMinPt_ || std::abs(jet.eta()) > jetMaxEta_) {
+        continue;
+      }
+      if (!passJetId(jet)) {
+        continue;
+      }
+      if (overlapsSelectedLepton(jet)) {
+        continue;
+      }
+      ++nJetsPreselected;
+      if (maxNJets_ >= 0 && nJetsPreselected > maxNJets_) {
+        return;
+      }
+    }
+  }
+  if (nJetsPreselected < static_cast<int>(minNJets_)) {
     return;
   }
 
@@ -2140,6 +3038,10 @@ void ChargeNtupleProducer::analyze(const edm::Event &event, const edm::EventSetu
       if (!passJetId(jet)) {
         continue;
       }
+      if (overlapsSelectedLepton(jet)) {
+        continue;
+      }
+      ++nSelectedJets_;
 
       jet_pt_.push_back(jet.pt());
       jet_eta_.push_back(jet.eta());
@@ -2352,37 +3254,122 @@ void ChargeNtupleProducer::analyze(const edm::Event &event, const edm::EventSetu
       jet_pnet_ptnu_.push_back(getJetDiscriminator(jet, pnet_ptnu_label));
       jet_pnet_ptreshigh_.push_back(getJetDiscriminator(jet, pnet_ptreshigh_label));
       jet_pnet_ptreslow_.push_back(getJetDiscriminator(jet, pnet_ptreslow_label));
-      float robust_b = getJetDiscriminator(jet,
-                                           {"pfRobustParTAK4BJetTags",
-                                            "pfRobustParTAK4DiscriminatorsJetTags:BvsAll",
-                                            "pfUnifiedParticleTransformerAK4DiscriminatorsJetTags:BvsAll"});
-      float robust_cvb = getJetDiscriminator(jet,
-                                             {"pfRobustParTAK4CvBJetTags",
-                                              "pfRobustParTAK4DiscriminatorsJetTags:CvsB",
-                                              "pfUnifiedParticleTransformerAK4DiscriminatorsJetTags:CvsB"});
-      float robust_cvl = getJetDiscriminator(jet,
-                                             {"pfRobustParTAK4CvLJetTags",
-                                              "pfRobustParTAK4DiscriminatorsJetTags:CvsL",
-                                              "pfUnifiedParticleTransformerAK4DiscriminatorsJetTags:CvsL"});
-      float robust_qg = getJetDiscriminator(jet,
-                                            {"pfRobustParTAK4QGJetTags",
-                                             "pfRobustParTAK4DiscriminatorsJetTags:QvsG",
-                                             "pfUnifiedParticleTransformerAK4DiscriminatorsJetTags:QvsG"});
-      float part_pos = getJetDiscriminator(
-          jet, {"pfRobustParTAK4JetTags:ParTPosvsAll", "pfRobustParTAK4JetTags:part_pos_vs_all"});
-      float part_neg = getJetDiscriminator(
-          jet, {"pfRobustParTAK4JetTags:ParTNegvsAll", "pfRobustParTAK4JetTags:part_neg_vs_all"});
-      float part_zero = getJetDiscriminator(
-          jet, {"pfRobustParTAK4JetTags:ParTZerovsAll", "pfRobustParTAK4JetTags:part_zero_vs_all"});
-      float part_pos_neg =
-          getJetDiscriminator(jet, {"pfRobustParTAK4JetTags:ParTPosvsNeg", "pfRobustParTAK4JetTags:part_pos_vs_neg"});
-      float charge_score = part_pos_neg;
-      if (charge_score <= -990.0f) {
-        if (part_pos > -990.0f && part_neg > -990.0f) {
-          charge_score = part_pos - part_neg;
-        } else {
-          charge_score = static_cast<float>(charge_k05);
-        }
+      auto robust_b_info = getJetDiscriminatorNonNegativeWithLabel(
+          jet,
+          {"pfRobustParTAK4BJetTags",
+           "pfRobustParTAK4DiscriminatorsJetTags:BvsAll",
+           "pfParticleTransformerAK4DiscriminatorsJetTags:BvsAll",
+           "pfUnifiedParticleTransformerAK4DiscriminatorsJetTags:BvsAll"});
+      auto robust_cvb_info = getJetDiscriminatorNonNegativeWithLabel(
+          jet,
+          {"pfRobustParTAK4CvBJetTags",
+           "pfRobustParTAK4DiscriminatorsJetTags:CvsB",
+           "pfParticleTransformerAK4DiscriminatorsJetTags:CvsB",
+           "pfUnifiedParticleTransformerAK4DiscriminatorsJetTags:CvsB"});
+      auto robust_cvl_info = getJetDiscriminatorNonNegativeWithLabel(
+          jet,
+          {"pfRobustParTAK4CvLJetTags",
+           "pfRobustParTAK4DiscriminatorsJetTags:CvsL",
+           "pfParticleTransformerAK4DiscriminatorsJetTags:CvsL",
+           "pfUnifiedParticleTransformerAK4DiscriminatorsJetTags:CvsL"});
+      auto robust_qg_info = getJetDiscriminatorNonNegativeWithLabel(
+          jet,
+          {"pfRobustParTAK4QGJetTags",
+           "pfRobustParTAK4DiscriminatorsJetTags:QvsG",
+           "pfParticleTransformerAK4DiscriminatorsJetTags:QvsG",
+           "pfUnifiedParticleTransformerAK4DiscriminatorsJetTags:QvsG"});
+      auto prob_b_info = getJetDiscriminatorNonNegativeWithLabel(
+          jet, {"pfParticleTransformerAK4JetTags:probb", "pfRobustParTAK4JetTags:probb"});
+      auto prob_bb_info = getJetDiscriminatorNonNegativeWithLabel(
+          jet, {"pfParticleTransformerAK4JetTags:probbb", "pfRobustParTAK4JetTags:probbb"});
+      auto prob_lepb_info = getJetDiscriminatorNonNegativeWithLabel(
+          jet, {"pfParticleTransformerAK4JetTags:problepb", "pfRobustParTAK4JetTags:problepb"});
+
+      float robust_b = robust_b_info.first;
+      float robust_cvb = robust_cvb_info.first;
+      float robust_cvl = robust_cvl_info.first;
+      float robust_qg = robust_qg_info.first;
+      if (!isUsableTagScore(robust_b) && isUsableTagScore(prob_b_info.first) && isUsableTagScore(prob_bb_info.first) &&
+          isUsableTagScore(prob_lepb_info.first)) {
+        robust_b = prob_b_info.first + prob_bb_info.first + prob_lepb_info.first;
+        robust_b_info.second = "sum(pfParticleTransformerAK4JetTags:probb,probbb,problepb)";
+      }
+
+      auto part_pos_info = getJetDiscriminatorNonNegativeWithLabel(
+          jet,
+          {"pfRobustParTAK4JetTags:ParTPosvsAll",
+           "pfRobustParTAK4DiscriminatorsJetTags:PosvsAll",
+           "pfParticleTransformerAK4DiscriminatorsJetTags:PosvsAll",
+           "pfRobustParTAK4JetTags:part_pos_vs_all"});
+      auto part_neg_info = getJetDiscriminatorNonNegativeWithLabel(
+          jet,
+          {"pfRobustParTAK4JetTags:ParTNegvsAll",
+           "pfRobustParTAK4DiscriminatorsJetTags:NegvsAll",
+           "pfParticleTransformerAK4DiscriminatorsJetTags:NegvsAll",
+           "pfRobustParTAK4JetTags:part_neg_vs_all"});
+      auto part_zero_info = getJetDiscriminatorNonNegativeWithLabel(
+          jet,
+          {"pfRobustParTAK4JetTags:ParTZerovsAll",
+           "pfRobustParTAK4DiscriminatorsJetTags:ZerovsAll",
+           "pfParticleTransformerAK4DiscriminatorsJetTags:ZerovsAll",
+           "pfRobustParTAK4JetTags:part_zero_vs_all"});
+      auto part_pos_neg_info = getJetDiscriminatorNonNegativeWithLabel(
+          jet,
+          {"pfRobustParTAK4JetTags:ParTPosvsNeg",
+           "pfRobustParTAK4DiscriminatorsJetTags:PosvsNeg",
+           "pfParticleTransformerAK4DiscriminatorsJetTags:PosvsNeg",
+           "pfRobustParTAK4JetTags:part_pos_vs_neg"});
+      auto prob_charge_pos_info = getJetDiscriminatorNonNegativeWithLabel(
+          jet, {"pfParticleTransformerAK4JetTags:probchargepos", "pfRobustParTAK4JetTags:probchargepos"});
+      auto prob_charge_neg_info = getJetDiscriminatorNonNegativeWithLabel(
+          jet, {"pfParticleTransformerAK4JetTags:probchargeneg", "pfRobustParTAK4JetTags:probchargeneg"});
+      auto prob_charge_zero_info = getJetDiscriminatorNonNegativeWithLabel(
+          jet, {"pfParticleTransformerAK4JetTags:probchargezero", "pfRobustParTAK4JetTags:probchargezero"});
+
+      float part_pos = part_pos_info.first;
+      float part_neg = part_neg_info.first;
+      float part_zero = part_zero_info.first;
+      float part_pos_neg = part_pos_neg_info.first;
+
+      const float charge_all_denom = prob_charge_pos_info.first + prob_charge_neg_info.first + prob_charge_zero_info.first;
+      if (!isUsableTagScore(part_pos) && charge_all_denom > 0.0f) {
+        part_pos = prob_charge_pos_info.first / charge_all_denom;
+        part_pos_info.second = "derived(probchargepos/sum)";
+      }
+      if (!isUsableTagScore(part_neg) && charge_all_denom > 0.0f) {
+        part_neg = prob_charge_neg_info.first / charge_all_denom;
+        part_neg_info.second = "derived(probchargeneg/sum)";
+      }
+      if (!isUsableTagScore(part_zero) && charge_all_denom > 0.0f) {
+        part_zero = prob_charge_zero_info.first / charge_all_denom;
+        part_zero_info.second = "derived(probchargezero/sum)";
+      }
+
+      const float charge_posneg_denom = prob_charge_pos_info.first + prob_charge_neg_info.first;
+      if (!isUsableTagScore(part_pos_neg) && charge_posneg_denom > 0.0f) {
+        part_pos_neg = prob_charge_pos_info.first / charge_posneg_denom;
+        part_pos_neg_info.second = "derived(probchargepos/(probchargepos+probchargeneg))";
+      }
+
+      float charge_score = -1.0f;
+      std::string charge_score_source;
+      bool has_onnx_charge = false;
+      if (isUsableTagScore(part_pos_neg)) {
+        charge_score = part_pos_neg;
+        charge_score_source = part_pos_neg_info.second;
+        has_onnx_charge = true;
+      } else if (isUsableTagScore(part_pos) && isUsableTagScore(part_neg)) {
+        charge_score = part_pos - part_neg;
+        charge_score_source = "PosvsAll-NegvsAll";
+        has_onnx_charge = true;
+      } else {
+        charge_score = -1.0f;
+        charge_score_source = "missing_charge_inference";
+      }
+      if (has_onnx_charge) {
+        ++nJetsWithOnnxCharge_;
+      } else {
+        ++nJetsMissingOnnxCharge_;
       }
       jet_btagRobustParTAK4B_.push_back(robust_b);
       jet_btagRobustParTAK4CvB_.push_back(robust_cvb);
@@ -2393,6 +3380,36 @@ void ChargeNtupleProducer::analyze(const edm::Event &event, const edm::EventSetu
       jet_ParTZerovsAll_.push_back(part_zero);
       jet_ParTPosvsNeg_.push_back(part_pos_neg);
       jet_charge_score_.push_back(charge_score);
+      if (doDebugPrint && debugRows.size() < 4) {
+        JetChargeDebugRow row;
+        row.pt = static_cast<float>(jet.pt());
+        row.eta = static_cast<float>(jet.eta());
+        row.charge_k05 = static_cast<float>(charge_k05);
+        row.charge_score = charge_score;
+        row.robust_b = robust_b;
+        row.robust_cvb = robust_cvb;
+        row.robust_cvl = robust_cvl;
+        row.robust_qg = robust_qg;
+        row.part_pos = part_pos;
+        row.part_neg = part_neg;
+        row.part_zero = part_zero;
+        row.part_pos_neg = part_pos_neg;
+        row.label_robust_b = robust_b_info.second;
+        row.label_robust_cvb = robust_cvb_info.second;
+        row.label_robust_cvl = robust_cvl_info.second;
+        row.label_robust_qg = robust_qg_info.second;
+        row.label_part_pos = part_pos_info.second;
+        row.label_part_neg = part_neg_info.second;
+        row.label_part_zero = part_zero_info.second;
+        row.label_part_pos_neg = part_pos_neg_info.second;
+        row.charge_source = charge_score_source;
+        if (!has_onnx_charge) {
+          row.available_charge_related_discriminators = summarizeJetDiscriminators(
+              jet,
+              {"charge", "Posvs", "Negvs", "Zerovs", "ParticleTransformer", "RobustParTAK4", "UnifiedParticleTransformerAK4"});
+        }
+        debugRows.push_back(std::move(row));
+      }
       for (size_t i = 0; i < btagLabels_.size(); ++i) {
         btagValues_[i].push_back(getJetDiscriminator(jet, btagLabels_[i]));
       }
@@ -3131,6 +4148,9 @@ void ChargeNtupleProducer::analyze(const edm::Event &event, const edm::EventSetu
       if (!passJetId(jet)) {
         continue;
       }
+      if (overlapsSelectedLepton(jet)) {
+        continue;
+      }
 
       jet_CHS_pt_.push_back(jet.pt());
       jet_CHS_eta_.push_back(jet.eta());
@@ -3209,23 +4229,88 @@ void ChargeNtupleProducer::analyze(const edm::Event &event, const edm::EventSetu
   }
 
   nJetSel_ = static_cast<int>(jet_pt_.size());
+  if (doDebugPrint) {
+    edm::LogPrint("ChargeNtupleProducerDebug")
+        << "[jet-charge-calib][debug] run:lumi:event=" << run_ << ":" << lumi_ << ":" << event_
+        << " nJetSel=" << nJetSel_ << " nMuonSel=" << nMuonSel_ << " nElectronSel=" << nElectronSel_;
+    for (size_t i = 0; i < debugElectronRows.size(); ++i) {
+      const auto &row = debugElectronRows[i];
+      edm::LogPrint("ChargeNtupleProducerDebug")
+          << "  electron[" << i << "] pt=" << row.pt << " eta=" << row.eta << " relIso03=" << row.rel_iso03
+          << " q=" << row.charge << " cutBasedResolved=" << row.cutbased_resolved;
+      edm::LogPrint("ChargeNtupleProducerDebug")
+          << "    userIntNames: " << row.user_int_names;
+      edm::LogPrint("ChargeNtupleProducerDebug")
+          << "    userFloatNames: " << row.user_float_names;
+      edm::LogPrint("ChargeNtupleProducerDebug")
+          << "    electronIDs: " << row.electron_ids;
+    }
+    for (size_t i = 0; i < debugRows.size(); ++i) {
+      const auto &row = debugRows[i];
+      edm::LogPrint("ChargeNtupleProducerDebug")
+          << "  jet[" << i << "] pt=" << row.pt << " eta=" << row.eta << " charge_score=" << row.charge_score
+          << " source=" << row.charge_source << " charge_k05=" << row.charge_k05 << " PosvsAll=" << row.part_pos
+          << " NegvsAll=" << row.part_neg << " ZerovsAll=" << row.part_zero << " PosvsNeg=" << row.part_pos_neg;
+      edm::LogPrint("ChargeNtupleProducerDebug")
+          << "    labels: robustB='" << row.label_robust_b << "' robustCvB='" << row.label_robust_cvb
+          << "' robustCvL='" << row.label_robust_cvl << "' robustQG='" << row.label_robust_qg << "'";
+      edm::LogPrint("ChargeNtupleProducerDebug")
+          << "    labels: PosvsAll='" << row.label_part_pos << "' NegvsAll='" << row.label_part_neg
+          << "' ZerovsAll='" << row.label_part_zero << "' PosvsNeg='" << row.label_part_pos_neg << "'";
+      if (row.charge_source == "missing_charge_inference") {
+        edm::LogPrint("ChargeNtupleProducerDebug")
+            << "    available charge-related discriminators: " << row.available_charge_related_discriminators;
+      }
+    }
+    ++debugEventsPrinted_;
+  }
+  if (maxNJets_ >= 0 && nJetSel_ > maxNJets_) {
+    return;
+  }
   if (nJetSel_ < static_cast<int>(minNJets_)) {
     return;
   }
 
-  if (nJetSel_ > 0 && (nMuonSel_ + nElectronSel_) > 0) {
-    TLorentzVector lep_p4;
-    TLorentzVector jet_p4;
-    TLorentzVector met_p4;
-    lep_p4.SetPtEtaPhiM(lepton_pt_, lepton_eta_, lepton_phi_, lepton_mass_);
-    jet_p4.SetPtEtaPhiM(jet_pt_[0], jet_eta_[0], jet_phi_[0], jet_mass_[0]);
-    met_p4.SetPtEtaPhiM(met_pt_, 0.0, met_phi_, 0.0);
-    top_mass_proxy_ = static_cast<float>((lep_p4 + jet_p4 + met_p4).M());
-  }
-
   cutflow_->Fill(3);
   tree_->Fill();
+  ++nEventsWritten_;
+  sumGenWeightsWritten_ += static_cast<double>(genWeight_);
   cutflow_->Fill(4);
+}
+
+void ChargeNtupleProducer::endJob() {
+  if (jobMetadata_ != nullptr) {
+    jobMetadata_->SetBinContent(1, static_cast<double>(nEventsProcessed_));
+    jobMetadata_->SetBinContent(2, static_cast<double>(nEventsWritten_));
+    jobMetadata_->SetBinContent(3, sumGenWeightsProcessed_);
+    jobMetadata_->SetBinContent(4, sumGenWeightsWritten_);
+    jobMetadata_->SetBinContent(5, sampleXsecPb_);
+    jobMetadata_->SetBinContent(6, sampleSumWeights_);
+    jobMetadata_->SetBinContent(7, targetLumiPb_);
+  }
+
+  edm::LogPrint("ChargeNtupleProducer")
+      << "[jet-charge-calib] sample metadata: sample='" << sampleName_ << "' dataset='" << datasetName_
+      << "' xsec_pb=" << sampleXsecPb_ << " sum_weights=" << sampleSumWeights_
+      << " target_lumi_pb=" << targetLumiPb_;
+
+  edm::LogPrint("ChargeNtupleProducer")
+      << "[jet-charge-calib] processed-event metadata: n_events_processed=" << nEventsProcessed_
+      << " n_events_written=" << nEventsWritten_ << " sum_gen_weight_processed=" << sumGenWeightsProcessed_
+      << " sum_gen_weight_written=" << sumGenWeightsWritten_;
+
+  edm::LogPrint("ChargeNtupleProducer")
+      << "[jet-charge-calib] ONNX charge summary: selected_jets=" << nSelectedJets_
+      << " with_onnx_charge=" << nJetsWithOnnxCharge_ << " missing_onnx_charge=" << nJetsMissingOnnxCharge_
+      << " requireChargeInference=" << (requireChargeInference_ ? "true" : "false");
+
+  if (requireChargeInference_ && nSelectedJets_ > 0 && nJetsWithOnnxCharge_ == 0) {
+    throw cms::Exception("ChargeInferenceMissing")
+        << "ONNX jet-charge inference is missing for all selected jets in this job.\n"
+        << "selected_jets=" << nSelectedJets_ << ", jets_with_onnx_charge=" << nJetsWithOnnxCharge_
+        << ", jets_missing_onnx_charge=" << nJetsMissingOnnxCharge_ << "\n"
+        << "This indicates charge inference branches are not present in the MiniAOD content for this processing chain.";
+  }
 }
 
 DEFINE_FWK_MODULE(ChargeNtupleProducer);

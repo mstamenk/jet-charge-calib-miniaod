@@ -1,0 +1,25 @@
+mode: at_least_one_lepton
+
+hlt:
+  apply: false
+  process: "HLT"
+  paths: []
+
+jets:
+  min_njets: 0
+  max_njets: -1
+  min_pt: 0.0
+  max_eta: 999.0
+  jet_id: ""
+  jet_lepton_overlap_dr: -1.0
+
+leptons:
+  max_nleptons: -1
+  muon_min_pt: 0.0
+  muon_max_eta: 999.0
+  muon_id: "none"
+  muon_max_rel_iso04: -1.0
+  electron_min_pt: 0.0
+  electron_max_eta: 999.0
+  electron_id: "none"
+  electron_max_rel_iso03: -1.0

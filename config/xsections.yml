@@ -1,0 +1,104 @@
+dataset_overrides:
+  ? /DYto2E-4Jets_Bin-MLL-50_TuneCP5_13p6TeV_madgraphMLM-pythia8/RunIII2024Summer24MiniAODv6-150X_mcRun3_2024_realistic_v2-v3/MINIAODSIM
+  : xsec_pb: 443.18399999999997
+  ? /DYto2Mu-4Jets_Bin-MLL-50_TuneCP5_13p6TeV_madgraphMLM-pythia8/RunIII2024Summer24MiniAODv6-150X_mcRun3_2024_realistic_v2-v3/MINIAODSIM
+  : xsec_pb: 442.84799999999996
+  /QCD_Bin-PT-120to170_TuneCP5_13p6TeV_pythia8/RunIII2024Summer24MiniAODv6-150X_mcRun3_2024_realistic_v2-v2/MINIAODSIM:
+    xsec_pb: 441700.0
+  /QCD_Bin-PT-170to300_TuneCP5_13p6TeV_pythia8/RunIII2024Summer24MiniAODv6-150X_mcRun3_2024_realistic_v2-v2/MINIAODSIM:
+    xsec_pb: 112800.0
+  /QCD_Bin-PT-300to470_TuneCP5_13p6TeV_pythia8/RunIII2024Summer24MiniAODv6-150X_mcRun3_2024_realistic_v2-v2/MINIAODSIM:
+    xsec_pb: 7604.0
+  /QCD_Bin-PT-80to120_TuneCP5_13p6TeV_pythia8/RunIII2024Summer24MiniAODv6-150X_mcRun3_2024_realistic_v2-v2/MINIAODSIM:
+    xsec_pb: 2516000.0
+  /TTTo2L2Nu_TuneCP5_13TeV-powheg-pythia8/RunIISummer20UL18MiniAODv2-106X_upgrade2018_realistic_v16_L1v1-v1/MINIAODSIM:
+    xsec_pb: 92.23324133709602
+  ? /TTToSemiLeptonic_TuneCP5_13TeV-powheg-pythia8/RunIISummer20UL18MiniAODv2-106X_upgrade2018_realistic_v16_L1v1-v1/MINIAODSIM
+  : xsec_pb: 369.486918749808
+  /TTto2L2Nu_TuneCP5_13p6TeV_powheg-pythia8/RunIII2024Summer24MiniAODv6-150X_mcRun3_2024_realistic_v2-v3/MINIAODSIM:
+    sum_weights: 899801590.1485443
+    xsec_pb: 96.80267361599999
+  /TTtoLNu2Q_TuneCP5_13p6TeV_powheg-pythia8/RunIII2024Summer24MiniAODv6-150X_mcRun3_2024_realistic_v2-v2/MINIAODSIM:
+    sum_weights: 435425622.7631836
+    xsec_pb: 404.58113280000003
+  ? /WtoLNu-4Jets_Bin-1J_TuneCP5_13p6TeV_madgraphMLM-pythia8/RunIII2024Summer24MiniAODv6-150X_mcRun3_2024_realistic_v2-v2/MINIAODSIM
+  : xsec_pb: 31620.0
+  ? /WtoLNu-4Jets_Bin-2J_TuneCP5_13p6TeV_madgraphMLM-pythia8/RunIII2024Summer24MiniAODv6-150X_mcRun3_2024_realistic_v2-v2/MINIAODSIM
+  : xsec_pb: 19460.0
+  ? /WtoLNu-4Jets_Bin-3J_TuneCP5_13p6TeV_madgraphMLM-pythia8/RunIII2024Summer24MiniAODv6-150X_mcRun3_2024_realistic_v2-v2/MINIAODSIM
+  : xsec_pb: 11940.0
+  ? /WtoLNu-4Jets_Bin-4J_TuneCP5_13p6TeV_madgraphMLM-pythia8/RunIII2024Summer24MiniAODv6-150X_mcRun3_2024_realistic_v2-v2/MINIAODSIM
+  : xsec_pb: 7244.0
+mc:
+  Run3_24:
+    ttbar_dileptonic:
+      xsec_pb: 96.80267361599999
+    ttbar_semileptonic:
+      xsec_pb: 404.58113280000003
+  UL18:
+    ttbar_dileptonic:
+      xsec_pb: 92.23324133709602
+    ttbar_semileptonic:
+      xsec_pb: 369.486918749808
+primary_dataset_globs:
+  ST_s-channel_4f_leptonDecays_13TeV*:
+    xsec_pb: 3.36
+  ST_t-channel_antitop_4f_inclusiveDecays_13TeV*:
+    xsec_pb: 81.42
+  ST_t-channel_top_4f_inclusiveDecays_13TeV*:
+    xsec_pb: 136.82
+  ST_tW_antitop_5f_inclusiveDecays_13TeV*:
+    xsec_pb: 35.85
+  ST_tW_top_5f_inclusiveDecays_13TeV*:
+    xsec_pb: 35.85
+primary_dataset_overrides:
+  DYJetsToLL_M-50_TuneCP5_13TeV-madgraphMLM-pythia8:
+    xsec_pb: 5765.4
+  DYJetsToLL_M-50_TuneCUETP8M1_13TeV-amcatnloFXFX-pythia8:
+    xsec_pb: 5765.4
+  DYJetsToLL_M-50_TuneCUETP8M1_13TeV-madgraphMLM-pythia8:
+    xsec_pb: 5765.4
+  QCD_Pt-15to7000_TuneCUETP8M1_Flat_13TeV_pythia8:
+    xsec_pb: 2022100000.0
+  QCD_Pt_1000to1400_TuneCUETP8M1_13TeV_pythia8:
+    xsec_pb: 9.4183
+  QCD_Pt_120to170_TuneCUETP8M1_13TeV_pythia8:
+    xsec_pb: 471100.0
+  QCD_Pt_1400to1800_TuneCUETP8M1_13TeV_pythia8:
+    xsec_pb: 0.84265
+  QCD_Pt_15to30_TuneCUETP8M1_13TeV_pythia8:
+    xsec_pb: 1837410000.0
+  QCD_Pt_170to300_TuneCUETP8M1_13TeV_pythia8:
+    xsec_pb: 117276.0
+  QCD_Pt_1800to2400_TuneCUETP8M1_13TeV_pythia8:
+    xsec_pb: 0.12163
+  QCD_Pt_2400to3200_TuneCUETP8M1_13TeV_pythia8:
+    xsec_pb: 0.00682981
+  QCD_Pt_300to470_TuneCUETP8M1_13TeV_pythia8:
+    xsec_pb: 7823.0
+  QCD_Pt_30to50_TuneCUETP8M1_13TeV_pythia8:
+    xsec_pb: 140932000.0
+  QCD_Pt_3200toInf_TuneCUETP8M1_13TeV_pythia8:
+    xsec_pb: 0.000165445
+  QCD_Pt_470to600_TuneCUETP8M1_13TeV_pythia8:
+    xsec_pb: 648.2
+  QCD_Pt_50to80_TuneCUETP8M1_13TeV_pythia8:
+    xsec_pb: 19204300.0
+  QCD_Pt_600to800_TuneCUETP8M1_13TeV_pythia8:
+    xsec_pb: 186.9
+  QCD_Pt_800to1000_TuneCUETP8M1_13TeV_pythia8:
+    xsec_pb: 32.293
+  QCD_Pt_80to120_TuneCUETP8M1_13TeV_pythia8:
+    xsec_pb: 2762530.0
+  TTTo2L2Nu_TuneCP5_13TeV-powheg-pythia8:
+    xsec_pb: 92.23324133709602
+  TTToSemiLeptonic_TuneCP5_13TeV-powheg-pythia8:
+    xsec_pb: 369.486918749808
+  WJetsToLNu_TuneCP5_13TeV-madgraphMLM-pythia8:
+    xsec_pb: 56000.0
+  WJetsToLNu_TuneCUETP8M1_13TeV-amcatnloFXFX-pythia8:
+    xsec_pb: 61526.7
+target_lumi_pb:
+  Run3_24: 107800.0
+  UL18: 59830.0
+  default: 1.0

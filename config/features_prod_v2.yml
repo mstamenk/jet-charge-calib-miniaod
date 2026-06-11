@@ -3,12 +3,14 @@
 
 tree_name: "Events"
 
-max_cpf_candidates: 26
-max_npf_candidates: 25
-max_sv_candidates: 5
-max_pairwise_candidates: 30
+max_cpf_candidates: 0
+max_npf_candidates: 0
+max_sv_candidates: 0
+max_pairwise_candidates: 0
 
 cand_sort: "DeepNTuples"
+write_low_level_features: false
+
 cand_charged_only: false
 
 # Event-level metadata (analysis bookkeeping).
